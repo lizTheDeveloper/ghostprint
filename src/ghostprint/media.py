@@ -20,6 +20,20 @@ INSTALL_HINT = {
 }
 
 
+class UnsafeInput(ValueError):
+    """The file isn't plain media: a playlist or list that could make ffmpeg fetch URLs or read other files."""
+
+
+# Demuxers we accept. Anything else (hls, dash, concat, tee, image2 sequences, ...) is refused.
+ALLOWED_DEMUXERS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska", "webm", "wav", "mp3", "aac", "flac", "ogg", "avi", "mpegts"}
+_TEXT_LISTS = (b"#EXTM3U", b"ffconcat", b"<?xml", b"<MPD", b"file ")
+
+
+def input_args(path: Path) -> list[str]:
+    """ffmpeg/ffprobe input options for a user file: local file protocol only, never a URL."""
+    return ["-protocol_whitelist", "file", "-i", "file:" + str(Path(path).resolve())]
+
+
 class ToolMissing(RuntimeError):
     def __init__(self, name: str, install_hint: str):
         super().__init__(f"{name} is not installed. Install it with: {install_hint}")
@@ -47,9 +61,19 @@ class MediaInfo:
 
 
 def _ffprobe(path: Path) -> dict:
-    out = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)],
-                         capture_output=True, text=True, check=True).stdout
-    return json.loads(out)
+    with open(path, "rb") as f:
+        head = f.read(64).lstrip(b"\xef\xbb\xbf \t\r\n")
+    if head.startswith(_TEXT_LISTS):
+        raise UnsafeInput(f"{Path(path).name} is a playlist or list file, not media")
+    r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format",
+                        *input_args(path)], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise UnsafeInput(f"{Path(path).name} could not be read as media")
+    j = json.loads(r.stdout)
+    fmt = set(j.get("format", {}).get("format_name", "").split(","))
+    if not fmt & ALLOWED_DEMUXERS:
+        raise UnsafeInput(f"{Path(path).name} is not a supported media container ({', '.join(sorted(fmt))})")
+    return j
 
 
 def _rotation(stream: dict) -> int:
@@ -99,7 +123,7 @@ TONEMAP = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=habl
 def read_audio(info: MediaInfo) -> tuple[np.ndarray, int] | None:
     if not info.audio_sr:
         return None
-    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(info.path), "-map", "0:a:0", "-vn",
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", *input_args(info.path), "-map", "0:a:0", "-vn",
                           "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"], capture_output=True, check=True).stdout
     ch = info.audio_channels or 1
     a = np.frombuffer(raw, dtype="<f4")
@@ -118,7 +142,7 @@ def iter_frames(info: MediaInfo, chunk: int = 32) -> Iterator[np.ndarray]:
     """Upright (autorotated), SDR, even-sized uint8 RGB frames, ``chunk`` at a time. Re-reads the file each call."""
     w, h = frame_size(info)
     vf = ([TONEMAP] if info.hdr else []) + [f"crop={w}:{h}:0:0"]
-    p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(info.path), "-map", "0:v:0", "-vf", ",".join(vf),
+    p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", *input_args(info.path), "-map", "0:v:0", "-vf", ",".join(vf),
                           "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
     fsz = w * h * 3
     try:
