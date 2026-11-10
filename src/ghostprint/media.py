@@ -83,3 +83,148 @@ def probe(path: Path) -> MediaInfo:
     return MediaInfo(path, "video", dur, int(v["width"]), int(v["height"]), fps, _rotation(v),
                      v.get("color_transfer") in ("arib-std-b67", "smpte2084"),
                      int(a["sample_rate"]) if a else None, int(a["channels"]) if a else None)
+
+
+# ----------------------------------------------------------------------------- pipe I/O
+import os
+import threading
+from collections.abc import Iterable, Iterator
+
+import numpy as np
+
+TONEMAP = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
+           "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+
+
+def read_audio(info: MediaInfo) -> tuple[np.ndarray, int] | None:
+    if not info.audio_sr:
+        return None
+    raw = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-i", str(info.path), "-map", "0:a:0", "-vn",
+                          "-f", "f32le", "-acodec", "pcm_f32le", "pipe:1"], capture_output=True, check=True).stdout
+    ch = info.audio_channels or 1
+    a = np.frombuffer(raw, dtype="<f4")
+    return a[: len(a) // ch * ch].reshape(-1, ch).copy(), info.audio_sr
+
+
+def frame_size(info: MediaInfo) -> tuple[int, int]:
+    """(width, height) of the frames iter_frames yields: upright, even."""
+    w, h = info.width, info.height
+    if info.rotation in (90, 270):
+        w, h = h, w
+    return w - w % 2, h - h % 2
+
+
+def iter_frames(info: MediaInfo, chunk: int = 32) -> Iterator[np.ndarray]:
+    """Upright (autorotated), SDR, even-sized uint8 RGB frames, ``chunk`` at a time. Re-reads the file each call."""
+    w, h = frame_size(info)
+    vf = ([TONEMAP] if info.hdr else []) + [f"crop={w}:{h}:0:0"]
+    p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(info.path), "-map", "0:v:0", "-vf", ",".join(vf),
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
+    fsz = w * h * 3
+    try:
+        while True:
+            buf = p.stdout.read(fsz * chunk)
+            if not buf:
+                break
+            n = len(buf) // fsz
+            if n:
+                yield np.frombuffer(buf[: n * fsz], np.uint8).reshape(n, h, w, 3)
+            if len(buf) < fsz * chunk:
+                break
+    finally:
+        p.stdout.close()
+        p.wait()
+
+
+def read_photo(info: MediaInfo) -> np.ndarray:
+    """Upright RGB pixels, converted to sRGB if the file carries another colour profile."""
+    import io
+
+    from PIL import Image, ImageCms, ImageOps
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    with Image.open(info.path) as im:
+        im = ImageOps.exif_transpose(im)
+        icc = im.info.get("icc_profile")
+        im = im.convert("RGB")
+        if icc:
+            try:
+                src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+                im = ImageCms.profileToProfile(im, src, ImageCms.createProfile("sRGB"), outputMode="RGB")
+            except (OSError, ImageCms.PyCMSError):
+                pass
+        return np.asarray(im, dtype=np.uint8).copy()
+
+
+def _tag_args(tags: dict[str, str]) -> list[str]:
+    args = ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact"]
+    for k, v in tags.items():
+        args += ["-metadata", f"{k}={v}"]
+    return args
+
+
+def write_video(out: Path, frames: Iterable[np.ndarray], fps: float, audio: tuple[np.ndarray, int] | None,
+                profile) -> None:
+    it = iter(frames)
+    first = next(it)
+    h, w = first.shape[1:3]
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
+           "-r", f"{fps:.6f}", "-i", "pipe:0"]
+    rfd = wfd = None
+    if audio is not None:
+        a, sr = audio
+        rfd, wfd = os.pipe()
+        cmd += ["-f", "f32le", "-ar", str(sr), "-ac", str(a.shape[1]), "-i", f"pipe:{rfd}"]
+    cmd += ["-map", "0:v"] + (["-map", "1:a"] if audio is not None else [])
+    cmd += profile.video_args + (profile.audio_args if audio is not None else [])
+    cmd += _tag_args(profile.container_tags) + ["-movflags", "+faststart", "-shortest" if audio is not None else "-y", str(out)]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, pass_fds=(rfd,) if rfd is not None else ())
+    errors = []
+
+    def feed_audio():
+        try:
+            with os.fdopen(wfd, "wb") as f:
+                f.write(np.ascontiguousarray(audio[0], dtype="<f4").tobytes())
+        except BrokenPipeError:
+            pass
+        except Exception as e:  # pragma: no cover
+            errors.append(e)
+
+    t = None
+    if audio is not None:
+        os.close(rfd)
+        t = threading.Thread(target=feed_audio, daemon=True)
+        t.start()
+    try:
+        p.stdin.write(np.ascontiguousarray(first).tobytes())
+        for c in it:
+            p.stdin.write(np.ascontiguousarray(c, dtype=np.uint8).tobytes())
+    except BrokenPipeError:
+        pass
+    finally:
+        p.stdin.close()
+    if t:
+        t.join()
+    if p.wait() != 0 or errors:
+        raise RuntimeError(f"ffmpeg failed writing {out.name}")
+
+
+def write_audio(out: Path, audio: np.ndarray, sr: int, profile) -> None:
+    a = np.ascontiguousarray(audio, dtype="<f4")
+    if a.ndim == 1:
+        a = a[:, None]
+    codec = ["-c:a", "pcm_s16le"] if out.suffix.lower() == ".wav" else profile.audio_args
+    cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "f32le", "-ar", str(sr), "-ac", str(a.shape[1]), "-i", "pipe:0",
+           *codec, *_tag_args(profile.container_tags if out.suffix.lower() != ".wav" else {}), str(out)]
+    subprocess.run(cmd, input=a.tobytes(), check=True)
+
+
+def write_photo(out: Path, img: np.ndarray, profile) -> None:
+    from PIL import Image
+
+    im = Image.fromarray(np.ascontiguousarray(img, dtype=np.uint8), "RGB")
+    if out.suffix.lower() == ".png":
+        im.save(out, format="PNG")
+    else:
+        im.save(out, format="JPEG", quality=profile.jpeg_quality, optimize=True)
