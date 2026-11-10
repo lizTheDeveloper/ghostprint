@@ -63,4 +63,4 @@ def test_html_not_checked_is_not_styled_as_ok():
     r = build_report("x", "video", [F("visible", NC, reason="r"), F("hum", N)], [F("visible", NC, reason="r"), F("hum", N)], set(), "o")
     h = render_html(r)
     assert 'class="v-not-checked"' in h and 'class="v-not-found"' in h
-    assert ".v-not-checked td:first-child{color:var(--warn)}" in h.replace(" ", "")
+    assert ".v-not-checked td:first-child{color:var(--warn)}" in h
