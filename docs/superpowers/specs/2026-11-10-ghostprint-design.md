@@ -1,6 +1,6 @@
 # ghostprint: design
 
-Status: draft for approval · 2026-11-10
+Status: ready for approval · 2026-11-10
 
 ## Intent
 
@@ -81,6 +81,21 @@ must be plain language.
 - **Aircraft are not verified against ADS-B.** That would need the network and the true location, so ghostprint
   scrubs unconditionally and verifies with the local ridge detector. flyover-scrub's audit stays the tool for
   people who want the full attack.
+
+## Decided after review
+
+- **Blend in.** A cleaned file must not look cleaned. Outputs look like ordinary phone or platform files: common
+  encoder settings (for example the profiles phones and TikTok/Instagram produce), plausible generic metadata
+  instead of an empty container, and randomised rather than fixed values (file timestamps, encoder tags). There
+  is a test: outputs from several inputs mustn't share a ghostprint-specific signature (identical tags,
+  identical timestamps, an unusual encoder string). This replaces "strip all" in the metadata row above: strip
+  everything identifying, then write back a generic, randomised, ordinary-looking set.
+- **No trace, including forensic recovery of the user's disk.** Intermediate media never touches disk: video and
+  audio flow ffmpeg → numpy → ffmpeg through pipes, in chunks for long or 4K clips. The only file written is the
+  requested output (and the report if asked for). The no-trace test also checks that no temp files were created at
+  any point, not just that none remain.
+- **Platforms: macOS and Linux CLI first.** Install with `uv` plus ffmpeg and exiftool from Homebrew or apt, with
+  step-by-step setup docs written for non-technical users. Windows and a no-terminal app come later.
 
 ## Report
 
