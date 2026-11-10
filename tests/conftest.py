@@ -71,3 +71,19 @@ def make_photo(tmp_path: Path, img: np.ndarray, *, fmt: str = "jpeg", exif: dict
 @pytest.fixture
 def rng():
     return np.random.default_rng(0)
+
+
+def make_flicker_frames(*, seconds=20, fps=30.0, size=(160, 120), flicker_hz=119.94, depth=0.03,
+                        readout=0.7, seed=0, noise=1.0):
+    """(flickered, clean) uint8 frames of a static scene under mains lighting, rolling-shutter style:
+    row y of frame n is exposed at n/fps + (y/H)·readout/fps."""
+    rng = np.random.default_rng(seed)
+    w, h = size
+    from scipy.ndimage import gaussian_filter
+    scene = gaussian_filter(rng.uniform(40, 200, (h, w, 3)), (3, 3, 0))
+    n = int(seconds * fps)
+    t = np.arange(n)[:, None] / fps + (np.arange(h)[None, :] / h) * readout / fps
+    gain = 1 + depth * np.sin(2 * np.pi * flicker_hz * t)  # (n, h)
+    clean = np.clip(scene[None] + noise * rng.normal(size=(n, h, w, 3)), 0, 255)
+    flick = np.clip(clean * gain[:, :, None, None], 0, 255)
+    return flick.astype(np.uint8), clean.astype(np.uint8)
