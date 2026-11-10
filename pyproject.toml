@@ -1,0 +1,26 @@
+[project]
+name = "ghostprint"
+version = "0.1.0"
+description = "Strip the place, time and device leaks from photos and videos before you post them"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "lizTheDeveloper" }]
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "soundfile>=0.12",
+    "pillow>=11.0",
+    "pillow-heif>=0.20",
+    "flyover-scrub @ git+https://github.com/lizTheDeveloper/flyover-scrub@v0.2.0",
+]
+
+[project.scripts]
+ghostprint = "ghostprint.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]

@@ -1,0 +1,73 @@
+"""Synthetic fixtures. Everything is generated in tmp_path; no real media is ever committed."""
+import subprocess
+from pathlib import Path
+
+import numpy as np
+import pytest
+import soundfile as sf
+from PIL import Image
+
+
+def _ff(*args):
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", *args], check=True)
+
+
+def make_audio(tmp_path: Path, x: np.ndarray, sr: int, name: str = "a.wav") -> Path:
+    p = tmp_path / name
+    sf.write(p, x, sr)
+    return p
+
+
+def make_video(tmp_path: Path, *, seconds: float = 40, fps: int = 30, size=(320, 240), audio=None,
+               rotation: int = 0, hdr: bool = False, frames: np.ndarray | None = None, name: str = "v.mov",
+               gps: bool = False) -> Path:
+    """A test video. ``frames`` (n, H, W, 3) uint8 overrides the default test pattern."""
+    w, h = size
+    out = tmp_path / name
+    src = []
+    if frames is not None:
+        raw = tmp_path / (name + ".rgb")
+        raw.write_bytes(np.ascontiguousarray(frames, dtype=np.uint8).tobytes())
+        h, w = frames.shape[1:3]
+        src += ["-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", str(fps), "-i", str(raw)]
+    else:
+        src += ["-f", "lavfi", "-i", f"testsrc2=size={w}x{h}:rate={fps}:duration={seconds}"]
+    if audio is not None:
+        a = make_audio(tmp_path, audio[0], audio[1], name + ".wav")
+        src += ["-i", str(a)]
+    args = [*src, "-map", "0:v"] + (["-map", "1:a", "-c:a", "aac", "-b:a", "192k"] if audio is not None else [])
+    if hdr:
+        args += ["-c:v", "libx265", "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020",
+                 "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc", "-tag:v", "hvc1"]
+    else:
+        args += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18"]
+    if gps:
+        args += ["-metadata", "location=+45.1000-122.2000/", "-metadata", "com.apple.quicktime.location.ISO6709=+45.1000-122.2000/",
+                 "-metadata", "com.apple.quicktime.model=iPhone 12 SN12345", "-metadata", "creation_time=2023-08-12T18:58:04Z"]
+    _ff(*args, "-shortest", "-movflags", "use_metadata_tags", str(out))
+    if rotation:
+        rot = tmp_path / ("r_" + name)
+        _ff("-display_rotation", str(rotation), "-i", str(out), "-c", "copy", str(rot))
+        out = rot
+    return out
+
+
+def make_photo(tmp_path: Path, img: np.ndarray, *, fmt: str = "jpeg", exif: dict | None = None, name: str | None = None) -> Path:
+    p = tmp_path / (name or f"p.{ 'jpg' if fmt == 'jpeg' else fmt}")
+    im = Image.fromarray(np.ascontiguousarray(img, dtype=np.uint8))
+    kw = {}
+    if exif:
+        ex = Image.Exif()
+        for k, v in exif.items():
+            ex[k] = v
+        kw["exif"] = ex.tobytes()
+    if fmt == "heic":
+        import pillow_heif
+        pillow_heif.register_heif_opener()
+    im.save(p, format=fmt.upper() if fmt != "jpeg" else "JPEG", **kw)
+    return p
+
+
+@pytest.fixture
+def rng():
+    return np.random.default_rng(0)
