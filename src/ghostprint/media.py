@@ -25,13 +25,15 @@ class UnsafeInput(ValueError):
 
 
 # Demuxers we accept. Anything else (hls, dash, concat, tee, image2 sequences, ...) is refused.
+# Passed to ffmpeg as -format_whitelist, so no other demuxer is ever instantiated on user input.
 ALLOWED_DEMUXERS = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2", "matroska", "webm", "wav", "mp3", "aac", "flac", "ogg", "avi", "mpegts"}
+_WHITELIST = "mov,matroska,wav,mp3,aac,flac,ogg,avi,mpegts"
 _TEXT_LISTS = (b"#EXTM3U", b"ffconcat", b"<?xml", b"<MPD", b"file ")
 
 
 def input_args(path: Path) -> list[str]:
     """ffmpeg/ffprobe input options for a user file: local file protocol only, never a URL."""
-    return ["-protocol_whitelist", "file", "-i", "file:" + str(Path(path).resolve())]
+    return ["-protocol_whitelist", "file", "-format_whitelist", _WHITELIST, "-i", "file:" + str(Path(path).resolve())]
 
 
 class ToolMissing(RuntimeError):
