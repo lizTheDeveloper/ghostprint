@@ -25,6 +25,7 @@ from ..findings import Finding, Status
 READOUTS = np.linspace(0.4, 1.0, 61)
 MIN_S = 10.0
 SNR_DB = 8.0
+LOCK_HZ = 1.0  # flicker aliased below this (e.g. 120 Hz at 30 fps) moves too slowly to separate from the scene
 MIN_DEPTH = 0.001  # 0.1 % of brightness; real mains flicker on phone video is ~1–10 %
 
 
@@ -41,6 +42,7 @@ class FlickerEstimate:
     cycles_per_row: float = 0.0
     mean_profile: np.ndarray | None = None
     fps: float = 0.0
+    locked: tuple[int, ...] = ()  # grids whose flicker is locked to the frame rate (can't be checked)
 
 
 def _profiles(frames: Callable[[], Iterator[np.ndarray]]) -> np.ndarray:
@@ -68,8 +70,12 @@ def measure(frames: Callable[[], Iterator[np.ndarray]], fps: float, height: int)
     d = _resid(P, mean_profile)
     block = max(4, int(round(fps)))
     best = FlickerEstimate(None, -np.inf, fps * height, 0.0, mean_profile, fps)
+    locked = []
     for nominal in (50, 60):
         f = 2.0 * nominal
+        if abs(f - fps * round(f / fps)) < LOCK_HZ:
+            locked.append(nominal)  # bands barely move frame to frame: indistinguishable from the scene
+            continue
         step = 2 * np.pi * f / fps
         cs = f * READOUTS / (fps * height)
         sig = np.array([_coherent_power(d, c, step, block) for c in cs])
@@ -84,12 +90,17 @@ def measure(frames: Callable[[], Iterator[np.ndarray]], fps: float, height: int)
             best = FlickerEstimate(nominal, float(snr), fps * height / READOUTS[i], float(cs[i]), mean_profile, fps)
     if best.snr_db < SNR_DB:
         best.nominal_hz = None
+    best.locked = tuple(locked)
     return best
 
 
 def detect(est: FlickerEstimate, duration_s: float) -> Finding:
     if duration_s < MIN_S:
         return Finding("flicker", Status.NOT_CHECKED, "", reason=f"clip shorter than {MIN_S:.0f} s")
+    if est.nominal_hz is None and est.locked:
+        hz = " / ".join(f"{n} Hz" for n in est.locked)
+        return Finding("flicker", Status.NOT_CHECKED, "flicker from mains lighting",
+                       reason=f"the frame rate is locked to {hz} grid lighting, so flicker can't be told apart from the scene")
     if est.nominal_hz is None:
         return Finding("flicker", Status.NOT_DETECTED, "no mains-light flicker")
     return Finding("flicker", Status.DETECTED,
