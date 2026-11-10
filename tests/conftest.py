@@ -87,3 +87,20 @@ def make_flicker_frames(*, seconds=20, fps=30.0, size=(160, 120), flicker_hz=119
     clean = np.clip(scene[None] + noise * rng.normal(size=(n, h, w, 3)), 0, 255)
     flick = np.clip(clean * gain[:, :, None, None], 0, 255)
     return flick.astype(np.uint8), clean.astype(np.uint8)
+
+
+def make_sensor_images(K: np.ndarray, n: int, seed: int = 0, noise: float = 1.5) -> list[np.ndarray]:
+    """n photos from a sensor whose fingerprint (photo-response non-uniformity) is K (H, W): I = scene·(1+K) + noise."""
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(seed)
+    h, w = K.shape
+    out = []
+    for _ in range(n):
+        scene = gaussian_filter(rng.uniform(30, 220, (h, w, 3)), (6, 6, 0))
+        img = scene * (1 + K[:, :, None]) + noise * rng.normal(size=(h, w, 3))
+        out.append(np.clip(img, 0, 255).astype(np.uint8))
+    return out
+
+
+def sensor(seed: int, size=(256, 256), strength=0.02) -> np.ndarray:
+    return np.random.default_rng(1000 + seed).normal(0, strength, size)
