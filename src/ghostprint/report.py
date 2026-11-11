@@ -50,7 +50,8 @@ def _verdict(b: Finding, a: Finding | None, fixed: set[str]) -> str:
 def _text(b: Finding, a: Finding | None, verdict: str) -> str:
     base = b.summary or LABELS.get(b.leak, b.leak)
     if verdict == "SCRUBBED (precaution)":
-        base = LABELS.get(b.leak, b.leak) + " (none detected; removed anyway)"
+        done = "weakened" if b.leak == "fingerprint" else "removed"  # grain weakens it; nothing erases it
+        base = LABELS.get(b.leak, b.leak) + f" (none detected; {done} anyway)"
     reason = (a.reason if a is not None and a.reason else None) or b.reason
     return f"{base} ({reason})" if verdict == "NOT CHECKED" and reason else base
 

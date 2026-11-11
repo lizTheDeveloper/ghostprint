@@ -71,3 +71,11 @@ def test_detected_then_gone_is_not_claimed_unless_fixed():
     r = build_report("x", "photo", [F("fingerprint", D)], [F("fingerprint", N)], set(), "o")
     assert r.lines[0].verdict == "NOT REMOVED" and r.headline != CLEAN_HEADLINE
     assert verdict(D, N, set()) == "NOT REMOVED"
+
+
+def test_fingerprint_precaution_says_weakened_not_removed():
+    from ghostprint.report import build_report
+    b = [Finding("fingerprint", Status.NOT_DETECTED, "no match")]
+    a = [Finding("fingerprint", Status.NOT_DETECTED, "no match")]
+    line = build_report("x.jpg", "photo", b, a, {"fingerprint"}, "o.jpg").lines[0]
+    assert line.verdict == "SCRUBBED (precaution)" and "weakened anyway" in line.text and "removed" not in line.text
