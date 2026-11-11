@@ -39,6 +39,8 @@ def _verdict(b: Finding, a: Finding | None, fixed: set[str]) -> str:
     if b.status is Status.DETECTED:
         if a.status is Status.DETECTED:
             return "STILL PRESENT"
+        if b.leak not in fixed:  # gone on re-check, but nothing was done to it: don't claim it
+            return "NOT REMOVED"
         return "REDUCED" if b.leak == "fingerprint" else "REMOVED"
     if a.status is Status.DETECTED:
         return "STILL PRESENT"
@@ -66,10 +68,10 @@ def build_report(name: str, kind: str, before: list[Finding], after: list[Findin
     if not bad:
         headline = CLEAN_HEADLINE
     else:
-        n = {v: sum(l.verdict == v for l in bad) for v in ("STILL PRESENT", "FOUND", "WARNING", "NOT CHECKED")}
+        n = {v: sum(l.verdict == v for l in bad) for v in ("STILL PRESENT", "NOT REMOVED", "FOUND", "WARNING", "NOT CHECKED")}
         parts = []
-        if n["STILL PRESENT"]:
-            parts.append(f"{n['STILL PRESENT']} leak(s) still present after cleaning")
+        if n["STILL PRESENT"] or n["NOT REMOVED"]:
+            parts.append(f"{n['STILL PRESENT'] + n['NOT REMOVED']} leak(s) still present after cleaning")
         if n["FOUND"]:
             parts.append(f"{n['FOUND']} leak(s) found")
         if n["WARNING"]:

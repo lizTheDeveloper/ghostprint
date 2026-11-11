@@ -59,6 +59,7 @@ Then **check your own work**: run `ghostprint clean.mp4 --check` on the output.
 | `SCRUBBED (precaution)` | nothing was found, but the fix ran anyway |
 | `NOT FOUND` | looked for and not there |
 | `STILL PRESENT` | found, and still there after cleaning. Don't post this |
+| `NOT REMOVED` | found in your file; this tool didn't treat it, even if a re-check no longer sees it |
 | `WARNING` | something this tool can't fix, like the sun's position |
 | `NOT CHECKED` | couldn't be checked, with the reason. Treat it as unknown, not as safe |
 

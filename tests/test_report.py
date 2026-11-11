@@ -64,3 +64,10 @@ def test_html_not_checked_is_not_styled_as_ok():
     h = render_html(r)
     assert 'class="v-not-checked"' in h and 'class="v-not-found"' in h
     assert ".v-not-checked td:first-child{color:var(--warn)}" in h
+
+
+def test_detected_then_gone_is_not_claimed_unless_fixed():
+    # e.g. JPEG re-encoding nudges a camera-fingerprint match under threshold: ghostprint didn't treat it
+    r = build_report("x", "photo", [F("fingerprint", D)], [F("fingerprint", N)], set(), "o")
+    assert r.lines[0].verdict == "NOT REMOVED" and r.headline != CLEAN_HEADLINE
+    assert verdict(D, N, set()) == "NOT REMOVED"
