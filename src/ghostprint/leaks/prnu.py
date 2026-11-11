@@ -74,6 +74,7 @@ class PRNUMatch:
     rot: int = 0  # quarter turns (np.rot90) that bring the photo back to the sensor's orientation...
     flip: bool = False  # ...after mirroring it left-right first (selfies, EXIF orientations 2/4/5/7)
     comparable: bool = True  # False: a crop (or odd resize) that can't be lined up with the reference frame
+    offset_pce: float = 0.0  # best PCE anywhere: catches a shifted photo, but needs OFFSET_PCE to count
 
 
 def _to_sensor(a: np.ndarray, rot: int, flip: bool) -> np.ndarray:
@@ -86,11 +87,13 @@ def _from_sensor(a: np.ndarray, rot: int, flip: bool) -> np.ndarray:
 
 
 ALIGN_PX = 2  # how far from exact alignment the peak may sit (resampling, demosaicing shifts)
+OFFSET_PCE = 1000.0  # anywhere-in-the-frame peaks reach ~40-320 by chance on real photos
 
 
-def _pce(w: np.ndarray, kg: np.ndarray) -> float:
+def _pce(w: np.ndarray, kg: np.ndarray) -> tuple[float, float]:
     """Peak-to-correlation energy at the aligned position (±ALIGN_PX). Only the aligned position counts:
-    the best of millions of offsets is large by chance (PCE 40–160 between different real phones)."""
+    the best of millions of offsets is large by chance (PCE 40–160 between different real phones).
+    Returns (aligned PCE, best PCE at any offset)."""
     from scipy import fft
 
     a = (w - w.mean()).astype(np.float32)
@@ -102,16 +105,21 @@ def _pce(w: np.ndarray, kg: np.ndarray) -> float:
     r = np.arange(-ALIGN_PX, ALIGN_PX + 1)
     near0 = xc[np.ix_(r % xc.shape[0], r % xc.shape[1])]
     k = np.unravel_index(np.argmax(near0), near0.shape)
-    i = (int(r[k[0]]) % xc.shape[0], int(r[k[1]]) % xc.shape[1])
-    peak = float(xc[i])
-    if peak <= 0:  # the fingerprint correlates positively; a negative peak is not a match
-        return 0.0
-    n = 5
-    ys = (np.arange(i[0] - n, i[0] + n + 1) % xc.shape[0])[:, None]
-    xs = (np.arange(i[1] - n, i[1] + n + 1) % xc.shape[1])[None, :]
-    near = xc[ys, xs].astype(np.float64)
-    energy = (float(np.vdot(xc, xc)) - float((near ** 2).sum())) / (xc.size - near.size)
-    return peak * peak / energy
+    aligned = (int(r[k[0]]) % xc.shape[0], int(r[k[1]]) % xc.shape[1])
+    anywhere = np.unravel_index(int(np.argmax(xc)), xc.shape)
+    total = float(np.vdot(xc, xc))
+
+    def at(i) -> float:
+        peak = float(xc[i])
+        if peak <= 0:  # the fingerprint correlates positively; a negative peak is not a match
+            return 0.0
+        n = 5
+        ys = (np.arange(i[0] - n, i[0] + n + 1) % xc.shape[0])[:, None]
+        xs = (np.arange(i[1] - n, i[1] + n + 1) % xc.shape[1])[None, :]
+        near = xc[ys, xs].astype(np.float64)
+        return peak * peak / ((total - float((near ** 2).sum())) / (xc.size - near.size))
+
+    return at(aligned), at(anywhere)
 
 
 def _comparable(shape: tuple[int, int], K: np.ndarray) -> bool:
@@ -138,8 +146,10 @@ def match(img: np.ndarray, K: np.ndarray, scales=SCALES) -> PRNUMatch:
             if r.shape[0] != r.shape[1] and (r.shape[1] > r.shape[0]) != landscape:
                 continue  # a portrait frame can't line up with a landscape sensor without turning it
             m = _match_upright(r, K, scales)
+            off = max(best.offset_pce, m.offset_pce)
             if m.pce > best.pce:
                 best = PRNUMatch(m.pce, m.scale, rot, flip)
+            best.offset_pce = off
     return best
 
 
@@ -155,10 +165,12 @@ def _match_upright(g: np.ndarray, K: np.ndarray, scales=SCALES) -> PRNUMatch:
         wres = np.zeros((H, W), np.float32)
         wres[:h, :w] = _residual(canvas[:h, :w])
         canvas *= K
-        p = _pce(wres, canvas)
+        p, anywhere = _pce(wres, canvas)
         del canvas, wres
         if p > best.pce:
-            best = PRNUMatch(p, float(s))
+            best = PRNUMatch(p, float(s), offset_pce=max(best.offset_pce, anywhere))
+        else:
+            best.offset_pce = max(best.offset_pce, anywhere)
     return best
 
 
@@ -173,6 +185,10 @@ def detect(m: PRNUMatch | None) -> Finding:
         return Finding("fingerprint", Status.DETECTED,
                        "camera sensor fingerprint matches your other photos: links this to the same phone",
                        strength=m.pce)
+    if m.offset_pce >= OFFSET_PCE:
+        return Finding("fingerprint", Status.DETECTED,
+                       "camera sensor fingerprint matches your other photos at a shifted position (the photo was "
+                       "shifted or cropped): links this to the same phone", strength=m.offset_pce)
     return Finding("fingerprint", Status.NOT_DETECTED,
                    "does not match your reference photos (more reference photos, or a stronger analysis, might still link it)",
                    strength=m.pce)

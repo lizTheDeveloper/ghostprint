@@ -131,3 +131,10 @@ def test_a_cropped_photo_is_not_checked():
     KT, refs, _ = _setup()
     m = match(make_sensor_images(KT, 1, seed=210)[0][:150, :150], estimate(refs))
     assert detect(m).status is Status.NOT_CHECKED
+
+
+def test_a_shifted_photo_with_a_strong_match_is_still_detected():
+    KT, refs, _ = _setup()
+    x = np.roll(make_sensor_images(KT, 1, seed=211)[0], (97, 41), axis=(0, 1))
+    f = detect(match(x, estimate(refs)))
+    assert f.status is Status.DETECTED and "shifted" in f.summary

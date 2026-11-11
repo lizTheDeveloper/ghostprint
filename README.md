@@ -18,7 +18,7 @@ and get a plain report of what was found, what was removed, and what it couldn't
 | Grid hum from mains power | when, to the second, and which power grid | **removes** |
 | Phone-radio buzz ("dit-dit-dit" from a phone near a speaker) | that a phone was transmitting nearby | **removes** |
 | Flicker from mains lighting in video | when, and which grid, even with the sound removed | **removes** (when the frame rate allows it to be checked, see below) |
-| Camera sensor fingerprint | links your photos to each other and to your phone | **removes** it from photos if you give it at least 4 other photos from your phone; **checks** video (see Limits) |
+| Camera sensor fingerprint | links your photos to each other and to your phone | **checks** it if you give it at least 4 other photos from your phone, and **removes** it from photos when it can do so invisibly (see Limits: often it can't) |
 | Sun position and hard shadows | time of day, latitude | **warns** only |
 | Readable signs, plates, landmarks, reflections | where | **not checked**: look before you post |
 
@@ -44,7 +44,7 @@ ghostprint IMG_1234.MOV -o clean.mp4                 # clean a video and print t
 ghostprint IMG_5678.HEIC -o clean.jpg                # clean a photo (saved as JPEG)
 ghostprint voice-memo.m4a -o clean.m4a               # clean audio
 ghostprint IMG_1234.MOV --check                      # report only; writes nothing
-ghostprint IMG_5678.HEIC -o clean.jpg --fingerprint-from ~/Pictures/my-phone   # also remove the camera fingerprint
+ghostprint IMG_5678.HEIC -o clean.jpg --fingerprint-from ~/Pictures/my-phone   # also check (and try to remove) the camera fingerprint
 ghostprint IMG_1234.MOV -o clean.mp4 --report report.html                      # save the report too
 ```
 
@@ -77,14 +77,20 @@ landmarks are never checked in this version, so look at the picture yourself bef
   are applied anyway; the detectors are how it checks them.
 - **`--keep hum` alone doesn't guarantee the hum survives**: removing plane tones resynthesises the background,
   and faint hum goes with it.
-- **The camera fingerprint is removed from photos only, and only with your help.** Every phone's sensor leaves a
-  faint pattern that links your photos to each other. To remove it, ghostprint has to learn your phone's
-  pattern: point `--fingerprint-from` at a folder of at least 4 other unedited photos from the same phone and
-  camera (more is better; 10–20 is good). It learns from half of them and re-checks the result against the
-  other half, the way an analyst with their own photos of your phone would. It needs the full photo: a cropped
-  or resized photo can't be lined up with the pattern, and the report says `NOT REMOVED`. In video the
-  fingerprint is checked but not removed. Without `--fingerprint-from` nothing is checked: posting from a
-  different device is the sure fix.
+- **The camera fingerprint: checked honestly, rarely removable from today's phones.** Every phone's sensor leaves
+  a faint pattern that can link your photos to each other. With `--fingerprint-from` (a folder of at least 4 other
+  unedited, uncropped photos from the same phone and camera) ghostprint checks whether this photo matches, and on a
+  full, uncropped photo tries to divide the pattern out: it learns from half your photos and re-checks against the
+  other half, and it refuses to change the photo visibly. What we found on real phones (a 2014 iPhone 6 Plus and a
+  2021 iPhone 13 Pro Max, 10–20 everyday photos each):
+  - Recent iPhones blur the pattern with their processing. With 10 everyday photos, ghostprint's check couldn't link
+    photos from the same phone, and a stronger analysis linked 2 of 6 from the older phone and none from the newer.
+  - Everyday photos don't teach ghostprint the pattern well enough to remove it without adding visible grain, so it
+    declines and the report says `NOT REMOVED`. Removal works when the pattern is learnt well: in tests on simulated
+    sensors it brings an analyst's score from tens of thousands to chance level with no visible change. More reference
+    photos, ideally of plain bright surfaces (sky, a white wall), help most.
+  - "No match" means no match against *your* reference photos, not that nobody could link it. Posting from a
+    different device is the sure fix. Cropped photos are `NOT CHECKED`; video is checked but never cleaned.
 - **Video is re-encoded**, so cleaning a long clip takes a while.
 - **It only protects the copy you post.** The original on your phone, cloud backups and whatever the app you
   post with records are out of its reach.
