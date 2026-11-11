@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--keep", action="append", default=[], choices=KEEPABLE, metavar="KIND",
                     help=f"don't fix this leak ({', '.join(KEEPABLE)}); repeatable")
     ap.add_argument("--fingerprint-from", type=Path, metavar="DIR",
-                    help="a folder of other photos from the same phone, to check the camera fingerprint")
+                    help="a folder of other photos from the same phone (at least 4), to check and remove the camera fingerprint")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:

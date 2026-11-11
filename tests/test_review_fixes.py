@@ -36,9 +36,10 @@ def test_ntsc_frame_rate_is_kept_exactly(tmp_path):
 def test_photo_fix_memory_is_bounded(tmp_path):
     code = (
         "import numpy as np, resource\n"
-        "from ghostprint.leaks.prnu import fix\n"
+        "from ghostprint.leaks.prnu import remove\n"
         "img = np.random.default_rng(0).integers(0, 255, (3000, 4000, 3), dtype=np.uint8)\n"
-        "fix(img, np.random.default_rng(1))\n"
+        "K = np.random.default_rng(1).normal(0, 0.01, (3000, 4000)).astype(np.float32)\n"
+        "remove(img, K, 0.9)\n"
         "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
     )
     out = subprocess.run(["uv", "run", "-q", "python", "-c", code], capture_output=True, text=True, check=True).stdout
@@ -119,7 +120,7 @@ def test_default_clean_does_not_visibly_alter_a_textured_photo(tmp_path):
     assert 10 * np.log10(255 ** 2 / max(mse, 1e-9)) >= 40
 
 
-def test_fingerprint_is_reported_still_present_not_fixed(tmp_path, capsys):
+def _fp_case(tmp_path, capsys, *extra):
     from conftest import make_sensor_images, sensor
     from PIL import Image
     refs = tmp_path / "refs"
@@ -128,7 +129,23 @@ def test_fingerprint_is_reported_still_present_not_fixed(tmp_path, capsys):
         Image.fromarray(im).save(refs / f"r{i}.png")
     p = tmp_path / "x.png"
     Image.fromarray(make_sensor_images(sensor(1), 1, seed=90)[0]).save(p)
-    assert main([str(p), "-o", str(tmp_path / "o.png"), "--fingerprint-from", str(refs), "--json"]) == 0
-    r = json.loads(capsys.readouterr().out)
+    out = tmp_path / "o.png"
+    assert main([str(p), "-o", str(out), "--fingerprint-from", str(refs), "--json", *extra]) == 0
+    return json.loads(capsys.readouterr().out), out
+
+
+def test_fingerprint_is_removed_with_reference_photos(tmp_path, capsys):
+    from conftest import make_sensor_images, sensor
+    from ghostprint.leaks.prnu import estimate, match
+    from PIL import Image
+    r, out = _fp_case(tmp_path, capsys)
+    fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
+    assert fp["verdict"] == "REDUCED"
+    attacker = estimate(make_sensor_images(sensor(1), 32, seed=2))
+    assert match(np.asarray(Image.open(out).convert("RGB")), attacker).pce < 60
+
+
+def test_keep_fingerprint_leaves_it_and_says_so(tmp_path, capsys):
+    r, _ = _fp_case(tmp_path, capsys, "--keep", "fingerprint")
     fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
     assert fp["verdict"] == "STILL PRESENT" and "Not clean" in r["headline"]

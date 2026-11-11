@@ -189,8 +189,9 @@ def iter_frames(info: MediaInfo, chunk: int = 32) -> Iterator[np.ndarray]:
         p.wait()
 
 
-def read_photo(info: MediaInfo) -> np.ndarray:
-    """Upright RGB pixels, converted to sRGB if the file carries another colour profile."""
+def read_photo(info: MediaInfo, upright: bool = True) -> np.ndarray:
+    """RGB pixels, converted to sRGB if the file carries another colour profile. Upright by default;
+    ``upright=False`` keeps the sensor's own orientation (for estimating the camera fingerprint)."""
     import io
 
     from PIL import Image, ImageCms, ImageOps
@@ -198,7 +199,8 @@ def read_photo(info: MediaInfo) -> np.ndarray:
 
     pillow_heif.register_heif_opener()
     with open_photo(info.path) as im:
-        im = ImageOps.exif_transpose(im)
+        if upright:
+            im = ImageOps.exif_transpose(im)
         icc = im.info.get("icc_profile")
         im = im.convert("RGB")
         if icc:

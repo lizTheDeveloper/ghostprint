@@ -18,7 +18,7 @@ and get a plain report of what was found, what was removed, and what it couldn't
 | Grid hum from mains power | when, to the second, and which power grid | **removes** |
 | Phone-radio buzz ("dit-dit-dit" from a phone near a speaker) | that a phone was transmitting nearby | **removes** |
 | Flicker from mains lighting in video | when, and which grid, even with the sound removed | **removes** (when the frame rate allows it to be checked, see below) |
-| Camera sensor fingerprint | links your photos to each other and to your phone | **checks** it if you give it a few other photos from your phone. **Can't remove it yet** (see Limits) |
+| Camera sensor fingerprint | links your photos to each other and to your phone | **removes** it from photos if you give it at least 4 other photos from your phone; **checks** video (see Limits) |
 | Sun position and hard shadows | time of day, latitude | **warns** only |
 | Readable signs, plates, landmarks, reflections | where | **not checked**: look before you post |
 
@@ -44,7 +44,7 @@ ghostprint IMG_1234.MOV -o clean.mp4                 # clean a video and print t
 ghostprint IMG_5678.HEIC -o clean.jpg                # clean a photo (saved as JPEG)
 ghostprint voice-memo.m4a -o clean.m4a               # clean audio
 ghostprint IMG_1234.MOV --check                      # report only; writes nothing
-ghostprint IMG_5678.HEIC -o clean.jpg --fingerprint-from ~/Pictures/my-phone   # also check the camera fingerprint
+ghostprint IMG_5678.HEIC -o clean.jpg --fingerprint-from ~/Pictures/my-phone   # also remove the camera fingerprint
 ghostprint IMG_1234.MOV -o clean.mp4 --report report.html                      # save the report too
 ```
 
@@ -55,7 +55,7 @@ Then **check your own work**: run `ghostprint clean.mp4 --check` on the output.
 | Word | Meaning |
 |---|---|
 | `REMOVED` | found in your file, and gone from the cleaned copy (re-checked) |
-| `REDUCED` | the camera fingerprint matched your other photos, and the cleaned copy no longer matches |
+| `REDUCED` | the camera fingerprint matched your other photos, and the cleaned copy no longer matches (re-checked against photos the removal didn't use) |
 | `SCRUBBED (precaution)` | nothing was found, but the fix ran anyway |
 | `NOT FOUND` | looked for and not there |
 | `STILL PRESENT` | found, and still there after cleaning. Don't post this |
@@ -77,10 +77,14 @@ landmarks are never checked in this version, so look at the picture yourself bef
   are applied anyway; the detectors are how it checks them.
 - **`--keep hum` alone doesn't guarantee the hum survives**: removing plane tones resynthesises the background,
   and faint hum goes with it.
-- **It can't remove the camera's sensor fingerprint yet.** Every phone's sensor leaves a faint pattern that can
-  link your photos to each other. The method we tried defeats matching but visibly ripples fine texture on real
-  photos, so it's switched off. With `--fingerprint-from` the report tells you whether a photo still matches your
-  phone (`STILL PRESENT`). Posting from a different device is the only sure fix today.
+- **The camera fingerprint is removed from photos only, and only with your help.** Every phone's sensor leaves a
+  faint pattern that links your photos to each other. To remove it, ghostprint has to learn your phone's
+  pattern: point `--fingerprint-from` at a folder of at least 4 other unedited photos from the same phone and
+  camera (more is better; 10–20 is good). It learns from half of them and re-checks the result against the
+  other half, the way an analyst with their own photos of your phone would. It needs the full photo: a cropped
+  or resized photo can't be lined up with the pattern, and the report says `NOT REMOVED`. In video the
+  fingerprint is checked but not removed. Without `--fingerprint-from` nothing is checked: posting from a
+  different device is the sure fix.
 - **Video is re-encoded**, so cleaning a long clip takes a while.
 - **It only protects the copy you post.** The original on your phone, cloud backups and whatever the app you
   post with records are out of its reach.

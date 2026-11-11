@@ -15,9 +15,10 @@ from .leaks import scene as S
 from .media import MediaInfo, frame_size, iter_frames, probe, read_audio, read_photo, require_tools, write_audio, write_photo, write_video
 from .report import Report, build_report
 
-KEEPABLE = ("aircraft", "hum", "gsm", "flicker")
+KEEPABLE = ("aircraft", "hum", "gsm", "flicker", "fingerprint")
 OUTPUT_EXT = {"photo": (".jpg", ".jpeg", ".png"), "video": (".mp4", ".mov", ".m4v"), "audio": (".m4a", ".wav")}
 SUN_EVERY_S = 5.0
+MIN_REFS_TO_REMOVE = 4  # two to fit the fingerprint removed, two independent ones to re-check it
 
 
 class UsageError(ValueError):
@@ -25,6 +26,7 @@ class UsageError(ValueError):
 
 
 def _load_refs(refs: Path) -> list[np.ndarray]:
+    """Reference frames in the sensor's own orientation, so portrait and landscape shots line up."""
     imgs = []
     for p in sorted(Path(refs).iterdir()):
         try:
@@ -32,7 +34,7 @@ def _load_refs(refs: Path) -> list[np.ndarray]:
         except Exception:
             continue
         if info.kind == "photo":
-            imgs.append(read_photo(info))
+            imgs.append(read_photo(info, upright=False))
         elif info.kind == "video":
             imgs.append(next(iter_frames(info, chunk=1))[0])
     if not imgs:
@@ -107,13 +109,14 @@ def run(inp: Path, out: Path | None, *, keep: set[str] = frozenset(), refs: Path
     info = probe(inp)
     if out is not None and out.suffix.lower() not in OUTPUT_EXT[info.kind]:
         raise UsageError(f"write a {info.kind} as {' or '.join(OUTPUT_EXT[info.kind])}")
-    K = P.estimate(_load_refs(refs)) if refs else None
+    ref_imgs = _load_refs(refs) if refs else None
+    K = P.estimate(ref_imgs) if ref_imgs else None
     before, ctx = _detect(info, K, is_output=False)
     if out is None:
         return build_report(inp.name, info.kind, before, None, set(), None)
 
     try:
-        return _clean(inp, out, info, ctx, before, K, keep, seed)
+        return _clean(inp, out, info, ctx, before, K, ref_imgs, keep, seed)
     except BaseException:
         # never leave a half-written file at the user's chosen name: it would be easy to post by mistake
         if out.exists():
@@ -129,7 +132,7 @@ def progress(msg: str) -> None:
         sys.stderr.flush()
 
 
-def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Finding], K, keep, seed) -> Report:
+def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Finding], K, ref_imgs, keep, seed) -> Report:
     rng = np.random.default_rng(seed)
     profile = random_profile(info.kind, rng)
     fixed = {"metadata"}
@@ -140,8 +143,8 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
     if info.kind == "video":
         est = ctx["flicker"]
         fixer = FL.FlickerFixer(est) if ("flicker" not in keep and est.nominal_hz is not None) else None
-        # The camera fingerprint is detected (with --fingerprint-from) but not removed: the warp in
-        # leaks/prnu.py defeats matching yet visibly ripples fine texture on real photos, so it isn't used.
+        # The camera fingerprint is only removed from photos: video frames are a crop and rescale of
+        # the sensor that reference photos don't line up with pixel for pixel.
         if fixer:
             fixed.add("flicker")
 
@@ -158,7 +161,19 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
         write_video(out, frames(), info.fps_frac or info.fps or 30.0, audio, profile)
         progress("")
     elif info.kind == "photo":
-        write_photo(out, ctx["img"], profile)
+        img = ctx["img"]
+        if ref_imgs is not None and len(ref_imgs) >= MIN_REFS_TO_REMOVE and "fingerprint" not in keep:
+            # Cross-fit: remove with one half of the reference photos, re-check with the other half.
+            # Re-checking against the estimate it was removed with reads high (that estimate's own
+            # noise is subtracted too, and correlates with itself); an independent half reads what an
+            # analyst with their own photos of the phone would.
+            fit = ref_imgs[0::2]
+            cleaned = P.remove(img, P.estimate(fit), P.reliability(fit))
+            if cleaned is not None:
+                img = cleaned
+                fixed.add("fingerprint")
+                K = P.estimate(ref_imgs[1::2])
+        write_photo(out, img, profile)
     else:
         write_audio(out, audio[0], audio[1], profile)
     apply_mtime(out, profile)

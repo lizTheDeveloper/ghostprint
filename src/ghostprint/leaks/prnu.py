@@ -6,18 +6,21 @@ pattern and test whether an "anonymous" photo came from the same phone (Lukáš,
 Goljan 2006). Matching is a peak-to-correlation-energy (PCE) test; PCE ≥ 60 is the usual
 decision threshold.
 
-The attacker is assumed to search over scale and crop, so a plain resize isn't a defence.
+The attacker is assumed to search over scale, crop and rotation, so a plain resize isn't a defence.
 
-NOT USED BY DEFAULT: `fix` (denoise + small random non-uniform warp) defeats whole-image matching on
-synthetic sensors, but on real 12–24 MP iPhone photos it produced a visible rippled-glass pattern on
-fine texture. ghostprint v1 only *detects* the fingerprint; removing it invisibly is open work.
+Removal (`remove`) needs the user's own reference photos: it divides the photo by (1 + c·K̂), where
+K̂ is the fingerprint estimated from those photos and deconvolved for the high-pass filter the
+estimate is made through, and c is fitted to this photo then corrected for the noise in K̂
+(split-half reliability). Against an analyst's independent estimate this lands at chance level
+in tests, at ~40–50 dB PSNR, with no geometric change. An earlier approach (a random warp) defeated
+matching but visibly rippled fine texture on real photos, and was dropped.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
-from scipy.ndimage import gaussian_filter, map_coordinates, zoom
+from scipy.ndimage import gaussian_filter, zoom
 
 from ..findings import Finding, Status
 
@@ -26,8 +29,12 @@ SCALES = np.round(np.arange(0.90, 1.1001, 0.01), 2)
 
 
 def _gray(img: np.ndarray) -> np.ndarray:
-    f = img.astype(np.float64)
-    return 0.299 * f[..., 0] + 0.587 * f[..., 1] + 0.114 * f[..., 2] if f.ndim == 3 else f
+    if img.ndim == 2:
+        return img.astype(np.float64)
+    g = 0.299 * img[..., 0].astype(np.float64)  # a channel at a time: a 12 MP photo is 290 MB as float64
+    g += 0.587 * img[..., 1]
+    g += 0.114 * img[..., 2]
+    return g
 
 
 def _residual(g: np.ndarray) -> np.ndarray:
@@ -52,6 +59,7 @@ def estimate(images: list[np.ndarray]) -> np.ndarray:
 class PRNUMatch:
     pce: float
     scale: float
+    rot: int = 0  # quarter turns (np.rot90) that bring the photo back to the sensor's orientation
 
 
 def _pce(w: np.ndarray, kg: np.ndarray) -> float:
@@ -69,8 +77,22 @@ def _pce(w: np.ndarray, kg: np.ndarray) -> float:
 
 
 def match(img: np.ndarray, K: np.ndarray) -> PRNUMatch:
-    """Best PCE of the image against K over scales 0.90–1.10; FFT correlation covers crop offsets."""
+    """Best PCE of the image against K over the four rotations and scales 0.90–1.10; FFT correlation
+    covers crop offsets."""
+    best = PRNUMatch(0.0, 1.0)
     g = _gray(img)
+    landscape = K.shape[1] >= K.shape[0]
+    for rot in range(4):
+        r = np.rot90(g, rot)
+        if r.shape[0] != r.shape[1] and (r.shape[1] > r.shape[0]) != landscape:
+            continue  # a portrait frame can't line up with a landscape sensor without turning it
+        m = _match_upright(r, K)
+        if m.pce > best.pce:
+            best = PRNUMatch(m.pce, m.scale, rot)
+    return best
+
+
+def _match_upright(g: np.ndarray, K: np.ndarray) -> PRNUMatch:
     H, W = K.shape
     best = PRNUMatch(0.0, 1.0)
     for s in SCALES:
@@ -98,34 +120,49 @@ def detect(m: PRNUMatch | None) -> Finding:
                    strength=m.pce)
 
 
-def make_warp(shape: tuple[int, int], rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    """A random smooth displacement field (~1.5 px, varying over ~12–30 px) plus a slight random rescale.
-
-    Measured on synthetic sensors: ~0.5 px over 30–60 px left PCE in the thousands (regions near the
-    field's zero crossings stay aligned); 1.5 px over 12–30 px brings it under 60 at ~38 dB PSNR.
-    Straight edges may wobble very slightly."""
-    h, w = shape
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    s = rng.uniform(0.985, 1.015)
-    dy = np.zeros((h, w), np.float32)
-    dx = np.zeros((h, w), np.float32)
-    for _ in range(6):
-        ky, kx = rng.uniform(2 * np.pi / 30, 2 * np.pi / 12, 2)
-        py, px = rng.uniform(0, 2 * np.pi, 2)
-        dy += 1.5 * np.sin(kx * xx + px) * np.cos(ky * yy + py)
-        dx += 1.5 * np.cos(kx * xx + py) * np.sin(ky * yy + px)
-    cy, cx = (h - 1) / 2, (w - 1) / 2
-    return ((yy - cy) * s + cy + dy).astype(np.float32), ((xx - cx) * s + cx + dx).astype(np.float32)
+def reliability(images: list[np.ndarray]) -> float:
+    """How much of the estimate from these images is fingerprint rather than noise (0–1): the
+    split-half correlation, stepped up to the full set (Spearman–Brown)."""
+    if len(images) < 2:
+        return 1.0
+    a, b = estimate(images[0::2]), estimate(images[1::2])
+    r = float(np.corrcoef(a.ravel(), b.ravel())[0, 1])
+    r = max(r, 0.05)
+    return 2 * r / (1 + r)
 
 
-def fix(img: np.ndarray, rng: np.random.Generator, warp=None, order: int = 3) -> np.ndarray:
-    """Denoise lightly, then warp. Pass the same ``warp`` (from make_warp) for every frame of a video.
-    Works one channel at a time in float32 to keep memory near 3x the image size."""
-    wy, wx = warp if warp is not None else make_warp(img.shape[:2], rng)
-    coords = np.stack([wy, wx]).astype(np.float32)
-    out = np.empty_like(img)
-    for c in range(img.shape[2]):
-        f = img[..., c].astype(np.float32)
-        f -= 0.8 * (f - gaussian_filter(f, 0.8))  # strip most of the pixel-level noise residual
-        out[..., c] = np.clip(np.rint(map_coordinates(f, coords, order=order, mode="reflect")), 0, 255)
-    return out
+def _deconvolve(K: np.ndarray, floor: float = 0.2) -> np.ndarray:
+    """Undo the estimate's high-pass (image minus a sigma-1 Gaussian blur) so the whole pattern is removed."""
+    from scipy import fft
+
+    H, W = K.shape
+    fy = fft.fftfreq(H).astype(np.float32)[:, None]
+    fx = fft.rfftfreq(W).astype(np.float32)[None, :]
+    passed = 1 - np.exp(-2 * np.pi ** 2 * (fy ** 2 + fx ** 2))
+    F = fft.rfft2(K.astype(np.float32))
+    F /= np.maximum(passed, floor)
+    del passed
+    return fft.irfft2(F, s=(H, W)).astype(np.float32)
+
+
+def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | None:
+    """The photo with the fingerprint K divided out, or None if the photo isn't the sensor's full frame
+    (cropped or resized), where the pattern can't be lined up pixel for pixel."""
+    rot = next((r for r in range(4) if np.rot90(img, r).shape[:2] == K.shape), None)
+    if rot is None:
+        return None
+    if img.shape[0] == img.shape[1]:  # square: the shape can't tell the rotation, the correlation can
+        rot = match(img, K).rot
+    x = np.rot90(img, rot)
+    Kd = _deconvolve(K)
+    g = _gray(x).astype(np.float32)  # float32 from here: halves the working set
+    w = _residual(g)
+    b = _residual(Kd * g)
+    c = float(np.vdot(w, b) / max(float(np.vdot(b, b)), 1e-20)) / max(rho, 0.05)
+    del g, w, b
+    Kd *= c
+    Kd += 1  # now the per-pixel gain
+    out = np.empty_like(x)
+    for ch in range(x.shape[2]):
+        out[..., ch] = np.clip(np.rint(x[..., ch] / Kd), 0, 255)
+    return np.rot90(out, -rot).copy()
