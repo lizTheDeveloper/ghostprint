@@ -15,7 +15,7 @@ from .leaks import scene as S
 from .media import MediaInfo, frame_size, iter_frames, probe, read_audio, read_photo, require_tools, write_audio, write_photo, write_video
 from .report import Report, build_report
 
-KEEPABLE = ("aircraft", "hum", "gsm", "flicker", "fingerprint")
+KEEPABLE = ("aircraft", "hum", "gsm", "flicker")
 OUTPUT_EXT = {"photo": (".jpg", ".jpeg", ".png"), "video": (".mp4", ".mov", ".m4v"), "audio": (".m4a", ".wav")}
 SUN_EVERY_S = 5.0
 
@@ -140,11 +140,8 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
     if info.kind == "video":
         est = ctx["flicker"]
         fixer = FL.FlickerFixer(est) if ("flicker" not in keep and est.nominal_hz is not None) else None
-        warp = None
-        if "fingerprint" not in keep:
-            fw, fh = frame_size(info)
-            warp = P.make_warp((fh, fw), rng)
-            fixed.add("fingerprint")
+        # The camera fingerprint is detected (with --fingerprint-from) but not removed: the warp in
+        # leaks/prnu.py defeats matching yet visibly ripples fine texture on real photos, so it isn't used.
         if fixer:
             fixed.add("flicker")
 
@@ -154,8 +151,6 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
             n = 0
             for chunk in iter_frames(info):
                 c = fixer.apply(chunk, n) if fixer else chunk
-                if warp is not None:
-                    c = np.stack([P.fix(fr, rng, warp, order=1) for fr in c])
                 n += len(chunk)
                 progress(f"cleaning video: {min(100, 100 * n // total)}%")
                 yield c
@@ -163,11 +158,7 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
         write_video(out, frames(), info.fps_frac or info.fps or 30.0, audio, profile)
         progress("")
     elif info.kind == "photo":
-        img = ctx["img"]
-        if "fingerprint" not in keep:
-            img = P.fix(img, rng)
-            fixed.add("fingerprint")
-        write_photo(out, img, profile)
+        write_photo(out, ctx["img"], profile)
     else:
         write_audio(out, audio[0], audio[1], profile)
     apply_mtime(out, profile)

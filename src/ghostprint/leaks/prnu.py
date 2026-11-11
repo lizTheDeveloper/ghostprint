@@ -6,9 +6,11 @@ pattern and test whether an "anonymous" photo came from the same phone (Lukáš,
 Goljan 2006). Matching is a peak-to-correlation-energy (PCE) test; PCE ≥ 60 is the usual
 decision threshold.
 
-The attacker is assumed to search over scale and crop, so a plain resize isn't a defence: the fix
-denoises and applies a small random, non-uniform warp, which misaligns the pattern differently in
-different parts of the image.
+The attacker is assumed to search over scale and crop, so a plain resize isn't a defence.
+
+NOT USED BY DEFAULT: `fix` (denoise + small random non-uniform warp) defeats whole-image matching on
+synthetic sensors, but on real 12–24 MP iPhone photos it produced a visible rippled-glass pattern on
+fine texture. ghostprint v1 only *detects* the fingerprint; removing it invisibly is open work.
 """
 from __future__ import annotations
 

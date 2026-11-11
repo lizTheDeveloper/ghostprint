@@ -18,7 +18,7 @@ and get a plain report of what was found, what was removed, and what it couldn't
 | Grid hum from mains power | when, to the second, and which power grid | **removes** |
 | Phone-radio buzz ("dit-dit-dit" from a phone near a speaker) | that a phone was transmitting nearby | **removes** |
 | Flicker from mains lighting in video | when, and which grid, even with the sound removed | **removes** (when the frame rate allows it to be checked, see below) |
-| Camera sensor fingerprint | links your photos to each other and to your phone | **weakens** it on every file. It can **check** only if you give it a few other photos from your phone |
+| Camera sensor fingerprint | links your photos to each other and to your phone | **checks** it if you give it a few other photos from your phone. **Can't remove it yet** (see Limits) |
 | Sun position and hard shadows | time of day, latitude | **warns** only |
 | Readable signs, plates, landmarks, reflections | where | **not checked**: look before you post |
 
@@ -76,10 +76,11 @@ landmarks are never checked in this version, so look at the picture yourself bef
   are applied anyway; the detectors are how it checks them.
 - **`--keep hum` alone doesn't guarantee the hum survives**: removing plane tones resynthesises the background,
   and faint hum goes with it.
-- **The camera-fingerprint fix assumes a whole-picture search.** It warps the image very slightly (straight edges
-  can wobble by a pixel), which defeats matching across the whole frame. An analyst matching small patches
-  separately might still link it.
-- **Video cleaning is slow** (minutes per minute of HD video), because every frame is re-processed.
+- **It can't remove the camera's sensor fingerprint yet.** Every phone's sensor leaves a faint pattern that can
+  link your photos to each other. The method we tried defeats matching but visibly ripples fine texture on real
+  photos, so it's switched off. With `--fingerprint-from` the report tells you whether a photo still matches your
+  phone (`STILL PRESENT`). Posting from a different device is the only sure fix today.
+- **Video is re-encoded**, so cleaning a long clip takes a while.
 - **It only protects the copy you post.** The original on your phone, cloud backups and whatever the app you
   post with records are out of its reach.
 

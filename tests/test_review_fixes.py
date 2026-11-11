@@ -56,16 +56,19 @@ def test_huge_image_is_refused_cleanly(tmp_path, monkeypatch, capsys):
 
 
 def test_failure_leaves_no_partial_output(tmp_path, monkeypatch):
-    from ghostprint.leaks import prnu
-    v = make_video(tmp_path, seconds=2)
+    from ghostprint import pipeline
+    v = make_video(tmp_path, seconds=3)
+    real = pipeline.iter_frames
     calls = {"n": 0}
-    real = prnu.fix
-    def flaky(*a, **k):
+
+    def flaky(info, *a, **k):
         calls["n"] += 1
-        if calls["n"] > 45:  # after the first chunk has reached ffmpeg
-            raise KeyboardInterrupt
-        return real(*a, **k)
-    monkeypatch.setattr(prnu, "fix", flaky)
+        for i, chunk in enumerate(real(info, *a, **k)):
+            if calls["n"] > 1 and i >= 1:  # the cleaning pass: fail after the first chunk reached ffmpeg
+                raise KeyboardInterrupt
+            yield chunk
+
+    monkeypatch.setattr(pipeline, "iter_frames", flaky)
     out = tmp_path / "o.mp4"
     with pytest.raises(KeyboardInterrupt):
         main([str(v), "-o", str(out)])
@@ -98,3 +101,34 @@ def test_unsupported_photo_output_extension_is_refused(tmp_path, name):
     p = make_photo(tmp_path, np.zeros((60, 80, 3)))
     assert main([str(p), "-o", str(tmp_path / name)]) == 2
     assert not (tmp_path / name).exists()
+
+
+def test_default_clean_does_not_visibly_alter_a_textured_photo(tmp_path):
+    """On real 24 MP iPhone photos the PRNU warp produced a visible rippled-glass pattern on fine texture
+    (PSNR 17-22 dB). The default clean must leave pixels essentially as they were (only JPEG loss)."""
+    from scipy.ndimage import gaussian_filter
+    from PIL import Image
+    rng = np.random.default_rng(9)
+    tex = gaussian_filter(rng.uniform(0, 255, (600, 800, 3)), (1.2, 1.2, 0))  # fine texture like gravel or fabric
+    tex = np.clip((tex - tex.mean()) * 4 + 128, 0, 255).astype(np.uint8)
+    p = make_photo(tmp_path, tex, fmt="png", name="tex.png")
+    out = tmp_path / "o.png"
+    assert main([str(p), "-o", str(out)]) == 0
+    b = np.asarray(Image.open(out)).astype(float)
+    mse = np.mean((b - tex.astype(float)) ** 2)
+    assert 10 * np.log10(255 ** 2 / max(mse, 1e-9)) >= 40
+
+
+def test_fingerprint_is_reported_still_present_not_fixed(tmp_path, capsys):
+    from conftest import make_sensor_images, sensor
+    from PIL import Image
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    for i, im in enumerate(make_sensor_images(sensor(1), 6, seed=1)):
+        Image.fromarray(im).save(refs / f"r{i}.png")
+    p = tmp_path / "x.png"
+    Image.fromarray(make_sensor_images(sensor(1), 1, seed=90)[0]).save(p)
+    assert main([str(p), "-o", str(tmp_path / "o.png"), "--fingerprint-from", str(refs), "--json"]) == 0
+    r = json.loads(capsys.readouterr().out)
+    fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
+    assert fp["verdict"] == "STILL PRESENT" and "Not clean" in r["headline"]
