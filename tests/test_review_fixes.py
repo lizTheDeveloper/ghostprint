@@ -107,7 +107,7 @@ def test_unsupported_photo_output_extension_is_refused(tmp_path, name):
 
 def test_default_clean_does_not_visibly_alter_a_textured_photo(tmp_path):
     """On real 24 MP iPhone photos the PRNU warp produced a visible rippled-glass pattern on fine texture
-    (PSNR 17-22 dB). The default clean must leave pixels essentially as they were (only JPEG loss)."""
+    (PSNR 17-22 dB). The default clean may only add JPEG loss and fine grain, never below MIN_PSNR (38 dB)."""
     from scipy.ndimage import gaussian_filter
     from PIL import Image
     rng = np.random.default_rng(9)
@@ -118,7 +118,7 @@ def test_default_clean_does_not_visibly_alter_a_textured_photo(tmp_path):
     assert main([str(p), "-o", str(out)]) == 0
     b = np.asarray(Image.open(out)).astype(float)
     mse = np.mean((b - tex.astype(float)) ** 2)
-    assert 10 * np.log10(255 ** 2 / max(mse, 1e-9)) >= 40
+    assert 10 * np.log10(255 ** 2 / max(mse, 1e-9)) >= 38
 
 
 def _fp_case(tmp_path, capsys, *extra):
@@ -168,3 +168,70 @@ def test_fingerprint_removal_unverifiable_is_not_claimed(tmp_path, capsys):
     r = json.loads(capsys.readouterr().out)
     fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
     assert fp["verdict"] == "NOT CHECKED" and "Nothing found" not in r["headline"]
+
+
+def _psnr_files(a, b):
+    from PIL import Image
+    x = np.asarray(Image.open(a).convert("RGB")).astype(float)
+    y = np.asarray(Image.open(b).convert("RGB")).astype(float)
+    mse = np.mean((x - y) ** 2)
+    return 99.0 if mse == 0 else 10 * np.log10(255 ** 2 / mse)
+
+
+def _photo(tmp_path):
+    from conftest import make_sensor_images, sensor
+    from PIL import Image
+    p = tmp_path / "x.png"
+    Image.fromarray(make_sensor_images(sensor(1), 1, seed=90)[0]).save(p)
+    return p
+
+
+def test_photos_get_fresh_grain_by_default_and_the_report_says_so(tmp_path, capsys):
+    p, out = _photo(tmp_path), tmp_path / "o.png"
+    assert main([str(p), "-o", str(out), "--json"]) == 0
+    assert 38 <= _psnr_files(p, out) < 60
+    fp = [l for l in json.loads(capsys.readouterr().out)["lines"] if l["leak"] == "fingerprint"][0]
+    assert fp["verdict"] == "NOT CHECKED" and "grain" in fp["text"]
+
+
+def test_keep_fingerprint_adds_no_grain(tmp_path):
+    p, out = _photo(tmp_path), tmp_path / "o.png"
+    assert main([str(p), "-o", str(out), "--keep", "fingerprint"]) == 0
+    assert _psnr_files(p, out) >= 60
+
+
+def test_grain_fallback_is_rechecked_honestly(tmp_path, capsys):
+    # grainy reference photos: subtraction would damage the photo, so grain is used; a strong match
+    # survives grain, and the report must say so rather than claim it reduced
+    from conftest import make_sensor_images, sensor
+    from PIL import Image
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    for i, im in enumerate(make_sensor_images(sensor(1), 4, seed=1, noise=20.0)):
+        Image.fromarray(im).save(refs / f"r{i}.png")
+    p, out = _photo(tmp_path), tmp_path / "o.png"
+    assert main([str(p), "-o", str(out), "--fingerprint-from", str(refs), "--json"]) == 0
+    assert _psnr_files(p, out) < 60  # grain went on
+    r = json.loads(capsys.readouterr().out)
+    fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
+    assert fp["verdict"] == "STILL PRESENT" and "Not clean" in r["headline"]
+
+
+def test_grain_goes_on_after_subtraction_too(tmp_path):
+    # on a real photo subtraction passed the quality check but did nothing (PCE 437 -> 500): grain must
+    # still be added, within one shared quality budget
+    from conftest import make_sensor_images, sensor
+    from PIL import Image
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    for i, im in enumerate(make_sensor_images(sensor(1), 6, seed=1)):
+        Image.fromarray(im).save(refs / f"r{i}.png")
+    p, out = _photo(tmp_path), tmp_path / "o.png"
+    assert main([str(p), "-o", str(out), "--fingerprint-from", str(refs)]) == 0
+    from ghostprint.leaks.prnu import estimate, remove, reliability
+    x = np.asarray(Image.open(p).convert("RGB"))
+    fit = make_sensor_images(sensor(1), 6, seed=1)[0::2]
+    subtracted_only = remove(x, estimate(fit), reliability(fit))
+    y = np.asarray(Image.open(out).convert("RGB"))
+    assert np.abs(y.astype(int) - subtracted_only).mean() > 0.3  # grain on top
+    assert _psnr_files(p, out) >= 38

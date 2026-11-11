@@ -18,7 +18,7 @@ and get a plain report of what was found, what was removed, and what it couldn't
 | Grid hum from mains power | when, to the second, and which power grid | **removes** |
 | Phone-radio buzz ("dit-dit-dit" from a phone near a speaker) | that a phone was transmitting nearby | **removes** |
 | Flicker from mains lighting in video | when, and which grid, even with the sound removed | **removes** (when the frame rate allows it to be checked, see below) |
-| Camera sensor fingerprint | links your photos to each other and to your phone | **checks** it if you give it at least 4 other photos from your phone, and **removes** it from photos when it can do so invisibly (see Limits: often it can't) |
+| Camera sensor fingerprint | links your photos to each other and to your phone | **weakens** it in every photo with fresh random grain; **checks** it, and removes it more precisely when it can, if you give it at least 4 other photos from your phone (see Limits) |
 | Sun position and hard shadows | time of day, latitude | **warns** only |
 | Readable signs, plates, landmarks, reflections | where | **not checked**: look before you post |
 
@@ -77,20 +77,21 @@ landmarks are never checked in this version, so look at the picture yourself bef
   are applied anyway; the detectors are how it checks them.
 - **`--keep hum` alone doesn't guarantee the hum survives**: removing plane tones resynthesises the background,
   and faint hum goes with it.
-- **The camera fingerprint: checked honestly, rarely removable from today's phones.** Every phone's sensor leaves
-  a faint pattern that can link your photos to each other. With `--fingerprint-from` (a folder of at least 4 other
-  unedited, uncropped photos from the same phone and camera) ghostprint checks whether this photo matches, and on a
-  full, uncropped photo tries to divide the pattern out: it learns from half your photos and re-checks against the
-  other half, and it refuses to change the photo visibly. What we found on real phones (a 2014 iPhone 6 Plus and a
-  2021 iPhone 13 Pro Max, 10–20 everyday photos each):
-  - Recent iPhones blur the pattern with their processing. With 10 everyday photos, ghostprint's check couldn't link
-    photos from the same phone, and a stronger analysis linked 2 of 6 from the older phone and none from the newer.
-  - Everyday photos don't teach ghostprint the pattern well enough to remove it without adding visible grain, so it
-    declines and the report says `NOT REMOVED`. Removal works when the pattern is learnt well: in tests on simulated
-    sensors it brings an analyst's score from tens of thousands to chance level with no visible change. More reference
-    photos, ideally of plain bright surfaces (sky, a white wall), help most.
-  - "No match" means no match against *your* reference photos, not that nobody could link it. Posting from a
-    different device is the sure fix. Cropped photos are `NOT CHECKED`; video is checked but never cleaned.
+- **The camera fingerprint is weakened, not erased.** Every phone's sensor leaves a faint pattern that can link your
+  photos to each other. ghostprint adds fresh random grain to every photo (different each time, so the grain can't
+  link your photos itself), scaled with brightness the way the pattern is, aiming to cut any analyst's match about
+  tenfold without going below 38 dB. You can see it as fine speckle on smooth sky if you zoom in; `--keep fingerprint`
+  turns it off. With `--fingerprint-from` (a folder of at least 4 other unedited, uncropped photos from the same
+  phone and camera) it also checks the match before and after, and first tries to divide the pattern out exactly.
+  What we measured on real phones (an iPhone 6 Plus and an iPhone 13 Pro Max, 10 everyday reference photos):
+  - iPhone 6 Plus: 2 of 7 held-out photos matched (PCE 67 and 437, threshold 60). After cleaning: 34 and 24. The
+    rest stayed far below. Changes were 37–39 dB including the JPEG re-save.
+  - iPhone 13 Pro Max: no held-out photo matched with 10 reference photos (the phone's processing blurs the pattern).
+  - An analyst with many more of your photos, or plain flat-scene ones (sky, walls), gets much stronger matches
+    than these, and tenfold weaker may still be a match to them. "No match" means no match against *your* reference
+    photos. Posting from a different device is the sure fix.
+  - Cropped photos are `NOT CHECKED`. Video is checked but not treated: an analyst can average many frames, which
+    averages fresh grain away.
 - **Video is re-encoded**, so cleaning a long clip takes a while.
 - **It only protects the copy you post.** The original on your phone, cloud backups and whatever the app you
   post with records are out of its reach.

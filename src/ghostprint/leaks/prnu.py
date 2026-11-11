@@ -274,3 +274,43 @@ def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | Non
     if mse > 0 and 10 * np.log10(255 ** 2 / mse) < MIN_PSNR:
         return None
     return _from_sensor(out, m.rot, m.flip).copy()
+
+
+GRAIN_REDUCTION = 10.0  # how much the grain aims to weaken any fingerprint match (PCE ratio)
+GRAIN_STEPS = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)  # grain level at mid-grey, 8-bit
+
+
+def regrain(img: np.ndarray, rng: np.random.Generator, reduction: float = GRAIN_REDUCTION,
+            min_psnr: float = MIN_PSNR, original: np.ndarray | None = None) -> np.ndarray:
+    """Add fresh, brightness-scaled luma grain: weakens any analyst's fingerprint match without knowing it.
+
+    A match is a correlation weighted by brightness (the fingerprint is multiplicative), so grain that
+    scales with brightness raises its noise most per unit of visible change. The grain is new random
+    noise every time, so it can't become a fingerprint of its own. The reduction is estimated from how
+    much the grain raises the brightness-weighted residual energy a match sees (conservative: the
+    adaptive denoiser also shrinks the fingerprint where grain is added). Steps up the grain until that
+    reaches ``reduction`` or the next step would go below ``min_psnr``, measured against ``original``
+    (default ``img``) so earlier changes share the budget. On real iPhone 6 Plus photos a held-out match
+    of PCE 511 fell to 33 at 38 dB.
+    """
+    ref = img if original is None else original
+    L = _gray(img).astype(np.float32)
+    weight2 = (L / 128.0) ** 2
+    base = float(np.vdot(_residual(L) ** 2, weight2)) + 1e-12
+    z = rng.standard_normal(L.shape).astype(np.float32) * (L / 128.0)
+    best = img
+    for sigma in GRAIN_STEPS:
+        g = sigma * z
+        y = np.empty_like(img)
+        sq = 0.0
+        for ch in range(img.shape[2]):
+            y[..., ch] = np.clip(np.rint(img[..., ch] + g), 0, 255)
+            d = y[..., ch].astype(np.float32) - ref[..., ch]
+            sq += float(np.vdot(d, d))
+        mse = sq / y.size
+        if mse > 0 and 10 * np.log10(255 ** 2 / mse) < min_psnr:
+            break
+        best = y
+        if float(np.vdot(_residual(_gray(y).astype(np.float32)) ** 2, weight2)) / base >= reduction:
+            break
+    return best.copy() if best is img else best

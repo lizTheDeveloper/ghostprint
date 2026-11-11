@@ -117,8 +117,9 @@ def test_outputs_do_not_share_a_signature(tmp_path, capsys):
     assert len({o.stat().st_mtime for o in outs}) == 3
     q = [subprocess.run(["exiftool", "-s3", "-JFIF:all", str(o)], capture_output=True, text=True).stdout for o in outs]
     assert all(b"ghostprint" not in o.read_bytes() for o in outs)
-    sizes = {o.stat().st_size for o in outs}
-    assert len(sizes) == 3  # random quality, not one fixed setting
+    from PIL import Image
+    tables = {repr(Image.open(o).quantization) for o in outs}
+    assert len(tables) == 3  # random quality, not one fixed setting
 
 
 def test_report_never_contains_leaked_values(leaky_video, tmp_path, capsys):

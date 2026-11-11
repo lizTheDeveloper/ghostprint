@@ -2,7 +2,7 @@ import numpy as np
 
 from conftest import make_sensor_images, make_textured_images, sensor
 from ghostprint.findings import Status
-from ghostprint.leaks.prnu import detect, estimate, match, reliability, remove
+from ghostprint.leaks.prnu import detect, estimate, match, regrain, reliability, remove
 
 
 def test_same_sensor_matches_other_does_not():
@@ -148,3 +148,20 @@ def test_match_sees_through_fine_texture():
     assert all(match(x, K, scales=(1.0,)).pce >= 60 for x in make_textured_images(KT, 3, seed=50))
     other = make_textured_images(sensor(2, strength=0.005), 3, seed=60)
     assert all(match(x, K, scales=(1.0,)).pce < 60 for x in other)
+
+
+def test_regrain_weakens_any_match_without_knowing_the_fingerprint():
+    KT = sensor(1, strength=0.002)
+    attacker = estimate(make_sensor_images(KT, 32, seed=2))
+    x = make_sensor_images(KT, 1, seed=301)[0]
+    y = regrain(x, np.random.default_rng(0))
+    assert match(y, attacker).pce <= match(x, attacker).pce / 5
+    assert _psnr(x, y) >= 38
+
+
+def test_regrain_is_fresh_every_time():
+    # the same grain in every photo would be a new fingerprint linking them all
+    x = make_sensor_images(sensor(1), 1, seed=302)[0]
+    a = regrain(x, np.random.default_rng(1)).astype(float) - x
+    b = regrain(x, np.random.default_rng(2)).astype(float) - x
+    assert abs(np.corrcoef(a.ravel(), b.ravel())[0, 1]) < 0.05

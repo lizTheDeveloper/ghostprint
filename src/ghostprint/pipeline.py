@@ -136,6 +136,7 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
     rng = np.random.default_rng(seed)
     profile = random_profile(info.kind, rng)
     fixed = {"metadata"}
+    fp_method = None  # how the camera fingerprint was treated: "subtract", "grain" or not at all
     audio = ctx.get("audio")
     if audio is not None and not {"aircraft", "hum", "gsm"} <= set(keep):
         audio = (A.fix_audio(audio[0], audio[1], set(keep)), audio[1])
@@ -162,23 +163,37 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
         progress("")
     elif info.kind == "photo":
         img = ctx["img"]
-        if ref_imgs is not None and len(ref_imgs) >= MIN_REFS_TO_REMOVE and "fingerprint" not in keep:
-            # Cross-fit: remove with one half of the reference photos, re-check with the other half.
-            # Re-checking against the estimate it was removed with reads high (that estimate's own
-            # noise is subtracted too, and correlates with itself); an independent half reads what an
-            # analyst with their own photos of the phone would.
-            fit = ref_imgs[0::2]
-            cleaned = P.remove(img, P.estimate(fit), P.reliability(fit))
-            if cleaned is not None:
-                img = cleaned
-                fixed.add("fingerprint")
-                K = P.estimate(ref_imgs[1::2])
+        if "fingerprint" not in keep:
+            cleaned = None
+            if ref_imgs is not None and len(ref_imgs) >= MIN_REFS_TO_REMOVE:
+                # Cross-fit: remove with one half of the reference photos, re-check with the other half.
+                # Re-checking against the estimate it was removed with reads high (that estimate's own
+                # noise is subtracted too, and correlates with itself); an independent half reads what an
+                # analyst with their own photos of the phone would.
+                fit = ref_imgs[0::2]
+                cleaned = P.remove(img, P.estimate(fit), P.reliability(fit))
+                if cleaned is not None:
+                    fp_method = "subtract"
+                    K = P.estimate(ref_imgs[1::2])
+            if cleaned is None:
+                fp_method = "grain"
+            # Fresh grain weakens any match without knowing the fingerprint, and on top of a subtraction
+            # it weakens what the subtraction missed (on a real photo that was everything). It's
+            # independent of the reference photos, so re-checking against all of them stays honest.
+            cleaned = P.regrain(img if cleaned is None else cleaned, rng, original=img)
+            img = cleaned
+            fixed.add("fingerprint")
         write_photo(out, img, profile)
     else:
         write_audio(out, audio[0], audio[1], profile)
     apply_mtime(out, profile)
     after, _ = _detect(probe(out), K, is_output=True)
-    if "fingerprint" in fixed and P.match(ctx["img"], K).pce < P.PCE_MATCH:
+    if fp_method == "grain" and K is None:
+        after = [f if f.leak != "fingerprint" else Finding(
+            "fingerprint", Status.NOT_CHECKED, "",
+            reason="fresh grain was added to weaken it; pass --fingerprint-from with photos from this phone to check it")
+            for f in after]
+    if fp_method == "subtract" and P.match(ctx["img"], K).pce < P.PCE_MATCH:
         # the held-back half can't recognise the phone even in the original, so its "no match" on the
         # cleaned copy proves nothing
         after = [f if f.leak != "fingerprint" else Finding(
