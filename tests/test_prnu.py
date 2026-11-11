@@ -91,3 +91,29 @@ def test_remove_declines_a_photo_from_another_phone():
     KT, refs, _ = _setup()
     other = make_sensor_images(sensor(2, strength=0.01), 1, seed=207)[0]
     assert remove(other, estimate(refs), reliability(refs)) is None
+
+
+
+def test_estimate_has_no_row_or_column_pattern_in_any_colour_phase():
+    # rows/columns shared by every phone of a model (readout, demosaicing) would match other phones:
+    # on real iPhone photos another phone scored PCE 300 against the raw estimate, 41 after this
+    rng = np.random.default_rng(3)
+    imgs = [np.clip(im * (1 + 0.02 * rng.normal(size=(1, 256, 1))), 0, 255).astype(np.uint8)
+            for im in make_sensor_images(sensor(1), 6, seed=1)]
+    K = estimate(imgs)
+    for i in (0, 1):
+        for j in (0, 1):
+            s = K[i::2, j::2]
+            assert np.abs(s.mean(axis=0)).max() < 1e-6 and np.abs(s.mean(axis=1)).max() < 1e-6
+
+
+def test_remove_declines_rather_than_damage_the_photo():
+    # few reference photos of a faint fingerprint: the estimate is mostly noise, and subtracting it at
+    # the strength needed would add visible grain (real iPhone photos came out at 18 dB)
+    KT = sensor(1, strength=0.02)
+    refs = make_sensor_images(KT, 2, seed=1, noise=20.0)  # two grainy photos: a match, but a noisy estimate
+    x = make_sensor_images(KT, 1, seed=208)[0]
+    K = estimate(refs)
+    assert match(x, K).pce >= 60
+    y = remove(x, K, reliability(refs))
+    assert y is None or _psnr(x, y) >= 38

@@ -25,6 +25,7 @@ from scipy.ndimage import gaussian_filter, zoom
 from ..findings import Finding, Status
 
 PCE_MATCH = 60.0
+MIN_PSNR = 38.0  # removal that would change the photo more than this (visible grain) is declined
 SCALES = np.round(np.arange(0.90, 1.1001, 0.01), 2)
 
 
@@ -52,7 +53,18 @@ def estimate(images: list[np.ndarray]) -> np.ndarray:
         g = _gray(img)
         num = num + _residual(g) * g
         den = den + g * g
-    return (num / np.maximum(den, 1e-6)).astype(np.float32)
+    return _zero_mean_phases((num / np.maximum(den, 1e-6)).astype(np.float32))
+
+
+def _zero_mean_phases(K: np.ndarray) -> np.ndarray:
+    """Remove every row and column mean within each 2x2 colour-filter phase (Fridrich's ZeroMeanTotal):
+    those patterns are shared by every phone of a model, not unique to this sensor."""
+    for i in (0, 1):
+        for j in (0, 1):
+            s = K[i::2, j::2]
+            s -= s.mean(axis=1, keepdims=True)
+            s -= s.mean(axis=0, keepdims=True)
+    return K
 
 
 @dataclass
@@ -166,8 +178,8 @@ def _deconvolve(K: np.ndarray, floor: float = 0.2) -> np.ndarray:
 
 def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | None:
     """The photo with the fingerprint K divided out, or None if it can't be lined up with K pixel for
-    pixel: a cropped or resized photo, or one K doesn't recognise (another phone, or too faint to say
-    which way round the photo is)."""
+    pixel (a cropped or resized photo, or one K doesn't recognise: another phone, or too faint to say
+    which way round the photo is), or if removing it would visibly change the photo (below MIN_PSNR)."""
     if img.shape[:2] not in (K.shape, K.shape[::-1]):
         return None
     m = match(img, K, scales=(1.0,))  # removal needs the full frame, so only its alignment matters
@@ -185,6 +197,14 @@ def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | Non
     Kd *= c
     Kd += 1  # now the per-pixel gain
     out = np.empty_like(x)
+    sq = 0.0
     for ch in range(x.shape[2]):
         out[..., ch] = np.clip(np.rint(x[..., ch] / Kd), 0, 255)
+        d = out[..., ch].astype(np.float32) - x[..., ch]
+        sq += float(np.vdot(d, d))
+    # A noisy estimate (few or grainy reference photos) has to be subtracted hard, and its noise goes in
+    # with it: on real iPhone photos that came to 18 dB. Decline rather than damage the photo.
+    mse = sq / out.size
+    if mse > 0 and 10 * np.log10(255 ** 2 / mse) < MIN_PSNR:
+        return None
     return _from_sensor(out, m.rot, m.flip).copy()
