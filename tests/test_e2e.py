@@ -107,19 +107,19 @@ def test_silent_video_report(tmp_path, capsys):
 def test_outputs_do_not_share_a_signature(tmp_path, capsys):
     rng = np.random.default_rng(0)
     outs = []
-    for i in range(3):
+    for i in range(6):
         p = make_photo(tmp_path, rng.integers(0, 255, (64, 80, 3)), name=f"in{i}.jpg",
                        exif={0x010F: "Apple", 0x0110: "iPhone 12"})
         o = tmp_path / f"out{i}.jpg"
         assert main([str(p), "-o", str(o)]) == 0
         outs.append(o)
     capsys.readouterr()
-    assert len({o.stat().st_mtime for o in outs}) == 3
+    assert len({o.stat().st_mtime for o in outs}) == 6
     q = [subprocess.run(["exiftool", "-s3", "-JFIF:all", str(o)], capture_output=True, text=True).stdout for o in outs]
     assert all(b"ghostprint" not in o.read_bytes() for o in outs)
     from PIL import Image
     tables = {repr(Image.open(o).quantization) for o in outs}
-    assert len(tables) == 3  # random quality, not one fixed setting
+    assert len(tables) >= 2  # random quality (11 settings), not one fixed one; all six equal by chance: 1 in 160,000
 
 
 def test_report_never_contains_leaked_values(leaky_video, tmp_path, capsys):
