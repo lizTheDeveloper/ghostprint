@@ -104,3 +104,17 @@ def make_sensor_images(K: np.ndarray, n: int, seed: int = 0, noise: float = 1.5)
 
 def sensor(seed: int, size=(256, 256), strength=0.02) -> np.ndarray:
     return np.random.default_rng(1000 + seed).normal(0, strength, size)
+
+
+def make_textured_images(K: np.ndarray, n: int, seed: int = 0, texture: float = 40.0, noise: float = 1.5) -> list[np.ndarray]:
+    """Like make_sensor_images, with patches of fine texture (foliage, fabric) that leak into a naive noise residual."""
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(seed)
+    h, w = K.shape
+    out = []
+    for _ in range(n):
+        scene = gaussian_filter(rng.uniform(30, 220, (h, w, 3)), (6, 6, 0))
+        patches = (gaussian_filter(rng.normal(size=(h, w)), 20) > 0)[:, :, None]
+        scene = scene + patches * texture * gaussian_filter(rng.normal(size=(h, w, 3)), (0.7, 0.7, 0))
+        out.append(np.clip(scene * (1 + K[:, :, None]) + noise * rng.normal(size=(h, w, 3)), 0, 255).astype(np.uint8))
+    return out

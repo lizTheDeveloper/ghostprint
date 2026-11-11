@@ -38,12 +38,35 @@ def _gray(img: np.ndarray) -> np.ndarray:
     return g
 
 
-def _residual(g: np.ndarray) -> np.ndarray:
-    """Noise residual: image minus a denoised copy, zero-meaned along rows and columns."""
-    w = g - gaussian_filter(g, 1.0)
+NOISE_SIGMA = 1.0  # noise level (8-bit) the adaptive denoiser assumes; on real JPEGs 1.0 found most (3.0 in Lukáš et al.)
+
+
+def _zero_mean(w: np.ndarray) -> np.ndarray:
     w -= w.mean(axis=1, keepdims=True)
     w -= w.mean(axis=0, keepdims=True)
     return w
+
+
+def _hp_residual(g: np.ndarray) -> np.ndarray:
+    """Image minus a sigma-1 blur: a linear high-pass, so a fitted strength through it is unbiased."""
+    return _zero_mean(g - gaussian_filter(g, 1.0))
+
+
+def _residual(g: np.ndarray) -> np.ndarray:
+    """Noise residual for matching: the high-pass, shrunk where the picture itself is busy (texture, edges).
+
+    An adaptive Wiener shrink over 3–9 px windows, keeping the smallest estimate (after Mihcak et al.
+    1999, the denoiser in Lukáš et al.): fine texture otherwise leaks in and drowns the fingerprint."""
+    from scipy.ndimage import uniform_filter
+
+    hp = (g - gaussian_filter(g, 1.0)).astype(np.float32)
+    s2 = np.float32(NOISE_SIGMA ** 2)
+    sq = hp * hp
+    out = None
+    for win in (3, 5, 7, 9):
+        est = hp * (s2 / (np.maximum(uniform_filter(sq, win) - s2, 0) + s2))
+        out = est if out is None else np.where(np.abs(est) < np.abs(out), est, out)
+    return _zero_mean(out)
 
 
 def estimate(images: list[np.ndarray]) -> np.ndarray:
@@ -233,8 +256,8 @@ def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | Non
         return None
     Kd = _deconvolve(K)
     g = _gray(x).astype(np.float32)  # float32 from here: halves the working set
-    w = _residual(g)
-    b = _residual(Kd * g)
+    w = _hp_residual(g)
+    b = _hp_residual(Kd * g)
     c = float(np.vdot(w, b) / max(float(np.vdot(b, b)), 1e-20)) / max(rho, 0.05)
     del g, w, b
     Kd *= c

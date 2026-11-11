@@ -1,6 +1,6 @@
 import numpy as np
 
-from conftest import make_sensor_images, sensor
+from conftest import make_sensor_images, make_textured_images, sensor
 from ghostprint.findings import Status
 from ghostprint.leaks.prnu import detect, estimate, match, reliability, remove
 
@@ -138,3 +138,13 @@ def test_a_shifted_photo_with_a_strong_match_is_still_detected():
     x = np.roll(make_sensor_images(KT, 1, seed=211)[0], (97, 41), axis=(0, 1))
     f = detect(match(x, estimate(refs)))
     assert f.status is Status.DETECTED and "shifted" in f.summary
+
+
+def test_match_sees_through_fine_texture():
+    # foliage, fabric and the like leak into a plain blur-difference residual and drown the fingerprint;
+    # analysts use an adaptive (Wiener-type) denoiser, and so must the check, or it under-reports
+    KT = sensor(1, strength=0.005)
+    K = estimate(make_textured_images(KT, 6, seed=1))
+    assert all(match(x, K, scales=(1.0,)).pce >= 60 for x in make_textured_images(KT, 3, seed=50))
+    other = make_textured_images(sensor(2, strength=0.005), 3, seed=60)
+    assert all(match(x, K, scales=(1.0,)).pce < 60 for x in other)
