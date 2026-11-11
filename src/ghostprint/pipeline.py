@@ -16,6 +16,7 @@ from .media import MediaInfo, frame_size, iter_frames, probe, read_audio, read_p
 from .report import Report, build_report
 
 KEEPABLE = ("aircraft", "hum", "gsm", "flicker", "fingerprint")
+OUTPUT_EXT = {"photo": (".jpg", ".jpeg", ".png"), "video": (".mp4", ".mov", ".m4v"), "audio": (".m4a", ".wav")}
 SUN_EVERY_S = 5.0
 
 
@@ -103,14 +104,32 @@ def run(inp: Path, out: Path | None, *, keep: set[str] = frozenset(), refs: Path
             raise UsageError("the output would overwrite the original; choose another name")
         if out.exists():
             raise UsageError(f"{out} already exists; choose another name")
-        if out.suffix.lower() in (".heic", ".heif"):
-            raise UsageError("write photos as .jpg or .png")
     info = probe(inp)
+    if out is not None and out.suffix.lower() not in OUTPUT_EXT[info.kind]:
+        raise UsageError(f"write a {info.kind} as {' or '.join(OUTPUT_EXT[info.kind])}")
     K = P.estimate(_load_refs(refs)) if refs else None
     before, ctx = _detect(info, K, is_output=False)
     if out is None:
         return build_report(inp.name, info.kind, before, None, set(), None)
 
+    try:
+        return _clean(inp, out, info, ctx, before, K, keep, seed)
+    except BaseException:
+        # never leave a half-written file at the user's chosen name: it would be easy to post by mistake
+        if out.exists():
+            out.unlink()
+        raise
+
+
+def progress(msg: str) -> None:
+    import sys
+
+    if sys.stderr.isatty():
+        sys.stderr.write("\r" + msg.ljust(40) + ("\n" if not msg else ""))
+        sys.stderr.flush()
+
+
+def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Finding], K, keep, seed) -> Report:
     rng = np.random.default_rng(seed)
     profile = random_profile(info.kind, rng)
     fixed = {"metadata"}
@@ -129,16 +148,20 @@ def run(inp: Path, out: Path | None, *, keep: set[str] = frozenset(), refs: Path
         if fixer:
             fixed.add("flicker")
 
+        total = max(1, int(round((info.duration_s or 0) * (info.fps or 30))))
+
         def frames():
             n = 0
             for chunk in iter_frames(info):
                 c = fixer.apply(chunk, n) if fixer else chunk
                 if warp is not None:
-                    c = np.stack([P.fix(fr, rng, warp) for fr in c])
+                    c = np.stack([P.fix(fr, rng, warp, order=1) for fr in c])
                 n += len(chunk)
+                progress(f"cleaning video: {min(100, 100 * n // total)}%")
                 yield c
 
-        write_video(out, frames(), info.fps or 30.0, audio, profile)
+        write_video(out, frames(), info.fps_frac or info.fps or 30.0, audio, profile)
+        progress("")
     elif info.kind == "photo":
         img = ctx["img"]
         if "fingerprint" not in keep:

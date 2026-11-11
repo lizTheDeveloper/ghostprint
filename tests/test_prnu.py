@@ -39,3 +39,10 @@ def test_fix_is_visually_mild():
     h, w = min(f.shape[0], a.shape[0]), min(f.shape[1], a.shape[1])
     mse = np.mean((f[:h, :w].astype(float) - a[:h, :w].astype(float)) ** 2)
     assert 10 * np.log10(255 ** 2 / mse) >= 32
+
+
+def test_video_warp_with_linear_interpolation_still_defeats_match():
+    KA = sensor(1)
+    K = estimate(make_sensor_images(KA, 8, seed=1))
+    a = make_sensor_images(KA, 1, seed=71)[0]
+    assert match(fix(a, np.random.default_rng(1), order=1), K).pce < 60

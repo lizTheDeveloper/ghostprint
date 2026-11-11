@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -38,9 +39,11 @@ def main(argv: list[str] | None = None) -> int:
     if not a.check and a.output is None:
         print("ghostprint: say where to write the cleaned copy with -o, or use --check", file=sys.stderr)
         return 2
-    if a.report is not None and a.report.exists():
-        print(f"ghostprint: {a.report} already exists; choose another name", file=sys.stderr)
-        return 2
+    if a.report is not None:
+        clash = {a.input.resolve()} | ({a.output.resolve()} if a.output is not None else set())
+        if a.report.exists() or a.report.resolve() in clash:
+            print(f"ghostprint: the report can't go to {a.report}: choose a new file name", file=sys.stderr)
+            return 2
     try:
         r = run(a.input, None if a.check else a.output, keep=set(a.keep), refs=a.fingerprint_from)
     except ToolMissing as e:
@@ -49,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
     except (UsageError, UnsafeInput) as e:
         print(f"ghostprint: {e}", file=sys.stderr)
         return 2
+    except (subprocess.CalledProcessError, RuntimeError, OSError) as e:
+        print(f"ghostprint: couldn't process {a.input.name} ({type(e).__name__}). Nothing was written.", file=sys.stderr)
+        return 1
     print(render_json(r) if a.json else render_text(r), end="")
     if a.report is not None:
         a.report.write_text(render_html(r) if a.report.suffix.lower() in (".html", ".htm") else render_text(r))

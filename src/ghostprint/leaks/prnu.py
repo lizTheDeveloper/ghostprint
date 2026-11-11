@@ -103,23 +103,27 @@ def make_warp(shape: tuple[int, int], rng: np.random.Generator) -> tuple[np.ndar
     field's zero crossings stay aligned); 1.5 px over 12–30 px brings it under 60 at ~38 dB PSNR.
     Straight edges may wobble very slightly."""
     h, w = shape
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float64)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
     s = rng.uniform(0.985, 1.015)
-    dy = np.zeros((h, w))
-    dx = np.zeros((h, w))
+    dy = np.zeros((h, w), np.float32)
+    dx = np.zeros((h, w), np.float32)
     for _ in range(6):
         ky, kx = rng.uniform(2 * np.pi / 30, 2 * np.pi / 12, 2)
         py, px = rng.uniform(0, 2 * np.pi, 2)
         dy += 1.5 * np.sin(kx * xx + px) * np.cos(ky * yy + py)
         dx += 1.5 * np.cos(kx * xx + py) * np.sin(ky * yy + px)
     cy, cx = (h - 1) / 2, (w - 1) / 2
-    return (yy - cy) * s + cy + dy, (xx - cx) * s + cx + dx
+    return ((yy - cy) * s + cy + dy).astype(np.float32), ((xx - cx) * s + cx + dx).astype(np.float32)
 
 
-def fix(img: np.ndarray, rng: np.random.Generator, warp=None) -> np.ndarray:
-    """Denoise lightly, then warp. Pass the same ``warp`` (from make_warp) for every frame of a video."""
-    f = img.astype(np.float64)
-    f = f - 0.8 * (f - gaussian_filter(f, (0.8, 0.8, 0)))  # strip most of the pixel-level noise residual
+def fix(img: np.ndarray, rng: np.random.Generator, warp=None, order: int = 3) -> np.ndarray:
+    """Denoise lightly, then warp. Pass the same ``warp`` (from make_warp) for every frame of a video.
+    Works one channel at a time in float32 to keep memory near 3x the image size."""
     wy, wx = warp if warp is not None else make_warp(img.shape[:2], rng)
-    out = np.stack([map_coordinates(f[..., c], [wy, wx], order=3, mode="reflect") for c in range(f.shape[2])], axis=-1)
-    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+    coords = np.stack([wy, wx]).astype(np.float32)
+    out = np.empty_like(img)
+    for c in range(img.shape[2]):
+        f = img[..., c].astype(np.float32)
+        f -= 0.8 * (f - gaussian_filter(f, 0.8))  # strip most of the pixel-level noise residual
+        out[..., c] = np.clip(np.rint(map_coordinates(f, coords, order=order, mode="reflect")), 0, 255)
+    return out

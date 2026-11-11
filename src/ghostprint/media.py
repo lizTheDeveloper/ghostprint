@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Literal
 
 PHOTO_EXT = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".tif", ".tiff"}
+PHOTO_FORMATS = ["JPEG", "PNG", "WEBP", "TIFF", "HEIF", "MPO"]  # Pillow plugins allowed on user files (no EPS/Ghostscript etc.)
+MAX_PIXELS = 120_000_000  # above this a photo is refused rather than risk running out of memory
 INSTALL_HINT = {
     "ffmpeg": "macOS: brew install ffmpeg · Debian/Ubuntu: sudo apt install ffmpeg",
     "ffprobe": "comes with ffmpeg (macOS: brew install ffmpeg · Debian/Ubuntu: sudo apt install ffmpeg)",
@@ -42,6 +44,23 @@ class ToolMissing(RuntimeError):
         self.name, self.install_hint = name, install_hint
 
 
+def open_photo(path: Path):
+    """Pillow open restricted to ordinary photo formats; any failure is UnsafeInput, not a traceback."""
+    from PIL import Image, UnidentifiedImageError
+
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    Image.init()
+    Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    try:
+        return Image.open(path, formats=[f for f in PHOTO_FORMATS if f in Image.OPEN])
+    except Image.DecompressionBombError:
+        raise UnsafeInput(f"{Path(path).name} is too large (over {MAX_PIXELS / 1e6:.0f} megapixels)") from None
+    except (UnidentifiedImageError, OSError, ValueError, KeyError) as e:
+        raise UnsafeInput(f"{Path(path).name} could not be read as a photo ({type(e).__name__})") from None
+
+
 def require_tools() -> None:
     for name, hint in INSTALL_HINT.items():
         if shutil.which(name) is None:
@@ -60,6 +79,7 @@ class MediaInfo:
     hdr: bool
     audio_sr: int | None
     audio_channels: int | None
+    fps_frac: str | None = None  # exact rate as ffprobe gives it, e.g. "30000/1001"
 
 
 def _ffprobe(path: Path) -> dict:
@@ -93,8 +113,12 @@ def probe(path: Path) -> MediaInfo:
         import pillow_heif
 
         pillow_heif.register_heif_opener()
-        with Image.open(path) as im:
-            w, h = ImageOps.exif_transpose(im).size
+        with open_photo(path) as im:
+            w, h = im.size
+            if w * h > MAX_PIXELS:
+                raise UnsafeInput(f"{path.name} is too large ({w * h / 1e6:.0f} megapixels; the limit is {MAX_PIXELS / 1e6:.0f})")
+            if (im.getexif() or {}).get(0x0112) in (5, 6, 7, 8):
+                w, h = h, w
         return MediaInfo(path, "photo", None, w, h, None, 0, False, None, None)
     j = _ffprobe(path)
     streams = j.get("streams", [])
@@ -104,11 +128,12 @@ def probe(path: Path) -> MediaInfo:
     if v is None:
         return MediaInfo(path, "audio", dur, None, None, None, 0, False,
                          int(a["sample_rate"]) if a else None, int(a["channels"]) if a else None)
-    num, den = (v.get("avg_frame_rate") or v.get("r_frame_rate") or "0/1").split("/")
+    frac = v.get("avg_frame_rate") if v.get("avg_frame_rate") not in (None, "0/0") else v.get("r_frame_rate", "0/1")
+    num, den = frac.split("/")
     fps = float(num) / float(den) if float(den) else None
     return MediaInfo(path, "video", dur, int(v["width"]), int(v["height"]), fps, _rotation(v),
                      v.get("color_transfer") in ("arib-std-b67", "smpte2084"),
-                     int(a["sample_rate"]) if a else None, int(a["channels"]) if a else None)
+                     int(a["sample_rate"]) if a else None, int(a["channels"]) if a else None, frac if fps else None)
 
 
 # ----------------------------------------------------------------------------- pipe I/O
@@ -118,6 +143,7 @@ from collections.abc import Iterable, Iterator
 
 import numpy as np
 
+CHUNK_BYTES = 96 * 1024 * 1024  # raw RGB per read; keeps 4K memory bounded
 TONEMAP = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
            "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
 
@@ -143,6 +169,7 @@ def frame_size(info: MediaInfo) -> tuple[int, int]:
 def iter_frames(info: MediaInfo, chunk: int = 32) -> Iterator[np.ndarray]:
     """Upright (autorotated), SDR, even-sized uint8 RGB frames, ``chunk`` at a time. Re-reads the file each call."""
     w, h = frame_size(info)
+    chunk = max(1, min(chunk, CHUNK_BYTES // (w * h * 3)))
     vf = ([TONEMAP] if info.hdr else []) + [f"crop={w}:{h}:0:0"]
     p = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", *input_args(info.path), "-map", "0:v:0", "-vf", ",".join(vf),
                           "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], stdout=subprocess.PIPE)
@@ -170,7 +197,7 @@ def read_photo(info: MediaInfo) -> np.ndarray:
     import pillow_heif
 
     pillow_heif.register_heif_opener()
-    with Image.open(info.path) as im:
+    with open_photo(info.path) as im:
         im = ImageOps.exif_transpose(im)
         icc = im.info.get("icc_profile")
         im = im.convert("RGB")
@@ -183,28 +210,37 @@ def read_photo(info: MediaInfo) -> np.ndarray:
         return np.asarray(im, dtype=np.uint8).copy()
 
 
+def output_arg(out: Path) -> list[str]:
+    """Output as a local file only: never parsed as a URL (a name like 'udp:x.mp4') or an option ('-x')."""
+    return ["-protocol_whitelist", "file", "file:" + str(Path(out).resolve())]
+
+
 def _tag_args(tags: dict[str, str]) -> list[str]:
-    args = ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact"]
+    # bitexact (format and codec level) drops the Lavf/Lavc version strings; the stream encoder tags are blanked
+    args = ["-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact", "-flags", "+bitexact",
+            "-metadata:s:v:0", "encoder=", "-metadata:s:a:0", "encoder="]
     for k, v in tags.items():
         args += ["-metadata", f"{k}={v}"]
     return args
 
 
-def write_video(out: Path, frames: Iterable[np.ndarray], fps: float, audio: tuple[np.ndarray, int] | None,
+def write_video(out: Path, frames: Iterable[np.ndarray], fps: float | str, audio: tuple[np.ndarray, int] | None,
                 profile) -> None:
     it = iter(frames)
     first = next(it)
     h, w = first.shape[1:3]
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}",
-           "-r", f"{fps:.6f}", "-i", "pipe:0"]
+           "-r", fps if isinstance(fps, str) else f"{fps:.6f}", "-i", "pipe:0"]
     rfd = wfd = None
     if audio is not None:
         a, sr = audio
         rfd, wfd = os.pipe()
         cmd += ["-f", "f32le", "-ar", str(sr), "-ac", str(a.shape[1]), "-i", f"pipe:{rfd}"]
     cmd += ["-map", "0:v"] + (["-map", "1:a"] if audio is not None else [])
-    cmd += profile.video_args + (profile.audio_args if audio is not None else [])
-    cmd += _tag_args(profile.container_tags) + ["-movflags", "+faststart", "-shortest" if audio is not None else "-y", str(out)]
+    cmd += profile.video_args + ["-bsf:v", "filter_units=remove_types=6"]  # drop the x264 settings SEI
+    cmd += profile.audio_args if audio is not None else []
+    cmd += _tag_args(profile.container_tags) + ["-movflags", "+faststart"] + (["-shortest"] if audio is not None else [])
+    cmd += output_arg(out)
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, pass_fds=(rfd,) if rfd is not None else ())
     errors = []
 
@@ -242,7 +278,7 @@ def write_audio(out: Path, audio: np.ndarray, sr: int, profile) -> None:
         a = a[:, None]
     codec = ["-c:a", "pcm_s16le"] if out.suffix.lower() == ".wav" else profile.audio_args
     cmd = ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "f32le", "-ar", str(sr), "-ac", str(a.shape[1]), "-i", "pipe:0",
-           *codec, *_tag_args(profile.container_tags if out.suffix.lower() != ".wav" else {}), str(out)]
+           *codec, *_tag_args(profile.container_tags if out.suffix.lower() != ".wav" else {}), *output_arg(out)]
     subprocess.run(cmd, input=a.tobytes(), check=True)
 
 
