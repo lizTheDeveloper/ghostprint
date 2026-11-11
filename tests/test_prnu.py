@@ -117,3 +117,17 @@ def test_remove_declines_rather_than_damage_the_photo():
     assert match(x, K).pce >= 60
     y = remove(x, K, reliability(refs))
     assert y is None or _psnr(x, y) >= 38
+
+
+def test_match_only_counts_the_aligned_position():
+    # The best of millions of correlation offsets is large by chance alone: on real iPhone photos it gave
+    # PCE 40–160 for photos from other phones, while the aligned position read 0–18.
+    KT, refs, _ = _setup()
+    x = np.roll(make_sensor_images(KT, 1, seed=209)[0], (97, 41), axis=(0, 1))
+    assert match(x, estimate(refs)).pce < 60
+
+
+def test_a_cropped_photo_is_not_checked():
+    KT, refs, _ = _setup()
+    m = match(make_sensor_images(KT, 1, seed=210)[0][:150, :150], estimate(refs))
+    assert detect(m).status is Status.NOT_CHECKED
