@@ -59,50 +59,69 @@ def estimate(images: list[np.ndarray]) -> np.ndarray:
 class PRNUMatch:
     pce: float
     scale: float
-    rot: int = 0  # quarter turns (np.rot90) that bring the photo back to the sensor's orientation
+    rot: int = 0  # quarter turns (np.rot90) that bring the photo back to the sensor's orientation...
+    flip: bool = False  # ...after mirroring it left-right first (selfies, EXIF orientations 2/4/5/7)
+
+
+def _to_sensor(a: np.ndarray, rot: int, flip: bool) -> np.ndarray:
+    return np.rot90(np.fliplr(a) if flip else a, rot)
+
+
+def _from_sensor(a: np.ndarray, rot: int, flip: bool) -> np.ndarray:
+    a = np.rot90(a, -rot)
+    return np.fliplr(a) if flip else a
 
 
 def _pce(w: np.ndarray, kg: np.ndarray) -> float:
-    a = w - w.mean()
-    b = kg - kg.mean()
-    xc = np.real(np.fft.ifft2(np.fft.fft2(a) * np.conj(np.fft.fft2(b))))
+    from scipy import fft
+
+    a = (w - w.mean()).astype(np.float32)
+    b = (kg - kg.mean()).astype(np.float32)
+    F = fft.rfft2(a)
+    F *= np.conj(fft.rfft2(b))
+    xc = fft.irfft2(F, s=a.shape)
+    del F
     i = np.unravel_index(np.argmax(np.abs(xc)), xc.shape)
-    peak = xc[i]
-    mask = np.ones_like(xc, bool)
+    peak = float(xc[i])
     r = 5
     ys = (np.arange(i[0] - r, i[0] + r + 1) % xc.shape[0])[:, None]
     xs = (np.arange(i[1] - r, i[1] + r + 1) % xc.shape[1])[None, :]
-    mask[ys, xs] = False
-    return float(peak * peak / np.mean(xc[mask] ** 2))
+    near = xc[ys, xs].astype(np.float64)
+    energy = (float(np.vdot(xc, xc)) - float((near ** 2).sum())) / (xc.size - near.size)
+    return peak * peak / energy
 
 
-def match(img: np.ndarray, K: np.ndarray) -> PRNUMatch:
-    """Best PCE of the image against K over the four rotations and scales 0.90–1.10; FFT correlation
-    covers crop offsets."""
+def match(img: np.ndarray, K: np.ndarray, scales=SCALES) -> PRNUMatch:
+    """Best PCE of the image against K over the eight rotations and mirrorings and scales 0.90–1.10;
+    FFT correlation covers crop offsets."""
     best = PRNUMatch(0.0, 1.0)
-    g = _gray(img)
+    g = _gray(img).astype(np.float32)
     landscape = K.shape[1] >= K.shape[0]
-    for rot in range(4):
-        r = np.rot90(g, rot)
-        if r.shape[0] != r.shape[1] and (r.shape[1] > r.shape[0]) != landscape:
-            continue  # a portrait frame can't line up with a landscape sensor without turning it
-        m = _match_upright(r, K)
-        if m.pce > best.pce:
-            best = PRNUMatch(m.pce, m.scale, rot)
+    for flip in (False, True):
+        for rot in range(4):
+            r = _to_sensor(g, rot, flip)
+            if r.shape[0] != r.shape[1] and (r.shape[1] > r.shape[0]) != landscape:
+                continue  # a portrait frame can't line up with a landscape sensor without turning it
+            m = _match_upright(r, K, scales)
+            if m.pce > best.pce:
+                best = PRNUMatch(m.pce, m.scale, rot, flip)
     return best
 
 
-def _match_upright(g: np.ndarray, K: np.ndarray) -> PRNUMatch:
+def _match_upright(g: np.ndarray, K: np.ndarray, scales=SCALES) -> PRNUMatch:
     H, W = K.shape
     best = PRNUMatch(0.0, 1.0)
-    for s in SCALES:
+    for s in scales:
         gs = g if s == 1.0 else zoom(g, 1.0 / s, order=1)
-        canvas = np.zeros((H, W))
+        canvas = np.zeros((H, W), np.float32)
         h, w = min(H, gs.shape[0]), min(W, gs.shape[1])
         canvas[:h, :w] = gs[:h, :w]
-        wres = np.zeros((H, W))
+        del gs
+        wres = np.zeros((H, W), np.float32)
         wres[:h, :w] = _residual(canvas[:h, :w])
-        p = _pce(wres, K * canvas)
+        canvas *= K
+        p = _pce(wres, canvas)
+        del canvas, wres
         if p > best.pce:
             best = PRNUMatch(p, float(s))
     return best
@@ -146,14 +165,17 @@ def _deconvolve(K: np.ndarray, floor: float = 0.2) -> np.ndarray:
 
 
 def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | None:
-    """The photo with the fingerprint K divided out, or None if the photo isn't the sensor's full frame
-    (cropped or resized), where the pattern can't be lined up pixel for pixel."""
-    rot = next((r for r in range(4) if np.rot90(img, r).shape[:2] == K.shape), None)
-    if rot is None:
+    """The photo with the fingerprint K divided out, or None if it can't be lined up with K pixel for
+    pixel: a cropped or resized photo, or one K doesn't recognise (another phone, or too faint to say
+    which way round the photo is)."""
+    if img.shape[:2] not in (K.shape, K.shape[::-1]):
         return None
-    if img.shape[0] == img.shape[1]:  # square: the shape can't tell the rotation, the correlation can
-        rot = match(img, K).rot
-    x = np.rot90(img, rot)
+    m = match(img, K, scales=(1.0,))  # removal needs the full frame, so only its alignment matters
+    if m.pce < PCE_MATCH:
+        return None
+    x = _to_sensor(img, m.rot, m.flip)
+    if x.shape[:2] != K.shape:
+        return None
     Kd = _deconvolve(K)
     g = _gray(x).astype(np.float32)  # float32 from here: halves the working set
     w = _residual(g)
@@ -165,4 +187,4 @@ def remove(img: np.ndarray, K: np.ndarray, rho: float = 1.0) -> np.ndarray | Non
     out = np.empty_like(x)
     for ch in range(x.shape[2]):
         out[..., ch] = np.clip(np.rint(x[..., ch] / Kd), 0, 255)
-    return np.rot90(out, -rot).copy()
+    return _from_sensor(out, m.rot, m.flip).copy()

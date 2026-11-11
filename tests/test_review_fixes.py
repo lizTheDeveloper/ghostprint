@@ -37,9 +37,10 @@ def test_photo_fix_memory_is_bounded(tmp_path):
     code = (
         "import numpy as np, resource\n"
         "from ghostprint.leaks.prnu import remove\n"
-        "img = np.random.default_rng(0).integers(0, 255, (3000, 4000, 3), dtype=np.uint8)\n"
         "K = np.random.default_rng(1).normal(0, 0.01, (3000, 4000)).astype(np.float32)\n"
-        "remove(img, K, 0.9)\n"
+        "img = np.random.default_rng(0).integers(40, 200, (3000, 4000, 3), dtype=np.uint8)\n"
+        "for c in range(3): img[..., c] = np.clip(img[..., c] * (1 + K), 0, 255)\n"
+        "assert remove(img, K, 0.9) is not None\n"
         "print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)\n"
     )
     out = subprocess.run(["uv", "run", "-q", "python", "-c", code], capture_output=True, text=True, check=True).stdout
@@ -149,3 +150,21 @@ def test_keep_fingerprint_leaves_it_and_says_so(tmp_path, capsys):
     r, _ = _fp_case(tmp_path, capsys, "--keep", "fingerprint")
     fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
     assert fp["verdict"] == "STILL PRESENT" and "Not clean" in r["headline"]
+
+
+def test_fingerprint_removal_unverifiable_is_not_claimed(tmp_path, capsys):
+    # the held-back re-check photos come from another phone, so they can't recognise this one even
+    # before cleaning: a low score afterwards proves nothing
+    from conftest import make_sensor_images, sensor
+    from PIL import Image
+    refs = tmp_path / "refs"
+    refs.mkdir()
+    mine, other = make_sensor_images(sensor(1), 3, seed=1), make_sensor_images(sensor(2), 3, seed=3)
+    for i, im in enumerate(x for pair in zip(mine, other) for x in pair):
+        Image.fromarray(im).save(refs / f"r{i}.png")
+    p = tmp_path / "x.png"
+    Image.fromarray(make_sensor_images(sensor(1), 1, seed=90)[0]).save(p)
+    assert main([str(p), "-o", str(tmp_path / "o.png"), "--fingerprint-from", str(refs), "--json"]) == 0
+    r = json.loads(capsys.readouterr().out)
+    fp = [l for l in r["lines"] if l["leak"] == "fingerprint"][0]
+    assert fp["verdict"] == "NOT CHECKED" and "Nothing found" not in r["headline"]

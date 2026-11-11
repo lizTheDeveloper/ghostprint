@@ -178,4 +178,11 @@ def _clean(inp: Path, out: Path, info: MediaInfo, ctx: dict, before: list[Findin
         write_audio(out, audio[0], audio[1], profile)
     apply_mtime(out, profile)
     after, _ = _detect(probe(out), K, is_output=True)
+    if "fingerprint" in fixed and P.match(ctx["img"], K).pce < P.PCE_MATCH:
+        # the held-back half can't recognise the phone even in the original, so its "no match" on the
+        # cleaned copy proves nothing
+        after = [f if f.leak != "fingerprint" else Finding(
+            "fingerprint", Status.NOT_CHECKED, "",
+            reason="the reference photos held back to re-check can't recognise this phone; add more photos from it")
+            for f in after]
     return build_report(inp.name, info.kind, before, after, fixed, out.name)

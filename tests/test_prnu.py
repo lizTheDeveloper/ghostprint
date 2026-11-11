@@ -71,3 +71,23 @@ def test_remove_declines_a_photo_of_another_size():
     KT, refs, _ = _setup()
     x = make_sensor_images(KT, 1, seed=204)[0][:200, :230]
     assert remove(x, estimate(refs), reliability(refs)) is None
+
+
+def test_match_finds_a_mirrored_photo():
+    KT, refs, _ = _setup()
+    x = make_sensor_images(KT, 1, seed=205)[0]
+    for k in (0, 1):
+        assert match(np.rot90(np.fliplr(x), k).copy(), estimate(refs)).pce >= 60
+
+
+def test_remove_handles_a_mirrored_photo():
+    KT, refs, attacker = _setup()
+    x = np.rot90(np.fliplr(make_sensor_images(KT, 1, seed=206)[0])).copy()
+    y = remove(x, estimate(refs), reliability(refs))
+    assert y is not None and y.shape == x.shape and match(y, attacker).pce < 60
+
+
+def test_remove_declines_a_photo_from_another_phone():
+    KT, refs, _ = _setup()
+    other = make_sensor_images(sensor(2, strength=0.01), 1, seed=207)[0]
+    assert remove(other, estimate(refs), reliability(refs)) is None
